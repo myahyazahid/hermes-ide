@@ -4,6 +4,7 @@
 //  - command approval (kind "execute"): rawInput {command, description}; options among
 //    allow_once / allow_session / allow_always / deny / deny_always.
 import type * as acp from "@agentclientprotocol/sdk";
+import { parseHookDescription } from "./terminalApproval";
 
 export type ParsedPermission =
   | {
@@ -15,7 +16,14 @@ export type ParsedPermission =
       isPatch: boolean;
       paths: string[];
     }
-  | { variant: "execute"; command: string; description: string }
+  | {
+      variant: "execute";
+      command: string;
+      description: string;
+      /** Raised by the IDE's pre_tool_call hook (every command), not by Hermes' danger check. */
+      viaHook?: boolean;
+      tool?: string;
+    }
   | { variant: "other"; title: string };
 
 export function parsePermission(req: acp.RequestPermissionRequest): ParsedPermission {
@@ -38,8 +46,13 @@ export function parsePermission(req: acp.RequestPermissionRequest): ParsedPermis
   }
 
   if (call.kind === "execute" || typeof raw.command === "string") {
+    const description = typeof raw.description === "string" ? raw.description : "";
+    // Hook escalations carry a synthetic "<terminal> (plugin approval rule)" target; the real
+    // command travels in the description the hook wrote.
+    const hooked = parseHookDescription(description) ?? parseHookDescription(call.title ?? "");
+    if (hooked) return { variant: "execute", command: hooked.subject, description: "", viaHook: true, tool: hooked.tool };
     const command = typeof raw.command === "string" ? raw.command : commandFromContent(call) ?? call.title ?? "";
-    return { variant: "execute", command, description: typeof raw.description === "string" ? raw.description : "" };
+    return { variant: "execute", command, description };
   }
 
   return { variant: "other", title: call.title ?? "Permission request" };

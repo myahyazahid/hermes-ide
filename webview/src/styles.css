@@ -329,3 +329,78 @@ button.stop:hover { background: var(--vscode-toolbar-hoverBackground); }
 @media (prefers-reduced-motion: reduce) {
   .spinner, .status .dot, .msg.agent.streaming *::after { animation: none; }
 }
+
+/* ---- Phase 2: context chips & @-mentions (F-12) ----------------------------------- */
+.composer { position: relative; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 0 2px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  font-size: 0.86em;
+  line-height: 20px;
+}
+.chip .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip button { padding: 0 6px; border-radius: 999px; color: var(--muted); line-height: 18px; }
+.chip button:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.chip.selection { border-color: var(--accent-border); }
+.chips.sent { justify-content: flex-end; margin-bottom: 4px; }
+.chips.sent .chip { padding: 0 8px; cursor: pointer; color: var(--vscode-textLink-foreground); }
+.user-turn { display: flex; flex-direction: column; align-items: flex-end; }
+.mentions {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 4px);
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  z-index: 10;
+}
+.mentions li.empty { padding: 4px 8px; color: var(--muted); }
+.mentions button { display: flex; gap: 8px; width: 100%; padding: 3px 8px; text-align: left; border-radius: 4px; }
+.mentions button.on, .mentions button:hover { background: var(--vscode-list-activeSelectionBackground, var(--accent-soft)); color: var(--vscode-list-activeSelectionForeground, inherit); }
+.mention-icon { color: var(--muted); width: 10px; }
+
+/* ---- profiles (F-16), approval (story 4), MCP (F-15) ------------------------------- */
+.profile-list { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 8px; }
+.profile {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  text-align: left;
+  border: 1px solid transparent;
+}
+.profile:hover { background: var(--vscode-toolbar-hoverBackground); }
+.profile.on { border-color: var(--accent-border); background: var(--accent-soft); }
+.profile .badge { color: var(--ok); font-size: 0.7em; }
+.profile-model { color: var(--muted); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile.add { color: var(--muted); display: block; }
+.approval-line { margin-top: 6px; font-size: 0.9em; }
+.approval-line.ok { color: var(--ok); }
+.approval-line.warn { color: var(--warn); }
+button.link-btn { padding: 0; color: var(--vscode-textLink-foreground); text-decoration: underline; }
+.banner-title { font-weight: 600; }
+.muted { color: var(--muted); }
+details.mcp { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+details.mcp summary { cursor: pointer; font-weight: 600; }
+.mcp-list { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.mcp-list li { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; }
+.mcp-list .check { margin: 0; }
+.mcp-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.86em; }
+.mcp-add { display: grid; grid-template-columns: 1fr auto; gap: 4px; margin-top: 6px; }
+.mcp-add .wide { grid-column: 1 / -1; }
+.mcp-add > button { grid-column: 1 / -1; justify-self: start; }

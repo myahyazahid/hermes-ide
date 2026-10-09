@@ -47,8 +47,8 @@ export class Transcript {
     return out;
   }
 
-  addUser(text: string): void {
-    this.push({ kind: "user", id: this.newId("user"), text });
+  addUser(text: string, context?: { label: string; path: string }[]): void {
+    this.push({ kind: "user", id: this.newId("user"), text, ...(context?.length ? { context } : {}) });
   }
 
   addNotice(level: "info" | "warn" | "error", text: string): string {

@@ -121,15 +121,35 @@ export class AcpClient {
     return this.peer.request("authenticate", { methodId } satisfies acp.AuthenticateRequest, { timeoutMs: 30_000 });
   }
 
-  newSession(cwd: string): Promise<HermesSessionResponse> {
-    return this.peer.request("session/new", { cwd, mcpServers: [] } satisfies acp.NewSessionRequest, { timeoutMs: 120_000 });
+  newSession(cwd: string, mcpServers: acp.McpServer[] = []): Promise<HermesSessionResponse> {
+    return this.peer.request("session/new", { cwd, mcpServers } satisfies acp.NewSessionRequest, { timeoutMs: 120_000 });
   }
 
-  /** Re-attaches to a persisted session; Hermes replays its history first. Null when unknown. */
-  loadSession(cwd: string, sessionId: string): Promise<HermesLoadResponse | null> {
-    return this.peer.request("session/load", { cwd, sessionId, mcpServers: [] } satisfies acp.LoadSessionRequest, {
-      timeoutMs: 120_000,
-    });
+  /**
+   * Re-attaches to a persisted session; Hermes replays its history first. Null when unknown.
+   * Hermes never persists a session that has not been prompted yet, and answers a load for an
+   * unknown id with an empty result rather than null; a real load always carries modes/models.
+   */
+  async loadSession(cwd: string, sessionId: string, mcpServers: acp.McpServer[] = []): Promise<HermesLoadResponse | null> {
+    const res = await this.peer.request<HermesLoadResponse | null>(
+      "session/load", { cwd, sessionId, mcpServers } satisfies acp.LoadSessionRequest, { timeoutMs: 120_000 },
+    );
+    return res && (res.modes || res.models) ? res : null;
+  }
+
+  /** Sessions for a working directory, newest first (all pages). */
+  async listSessions(cwd: string): Promise<acp.SessionInfo[]> {
+    const out: acp.SessionInfo[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const res = await this.peer.request<acp.ListSessionsResponse>(
+        "session/list", { cwd, ...(cursor ? { cursor } : {}) } satisfies acp.ListSessionsRequest, { timeoutMs: 30_000 },
+      );
+      out.push(...res.sessions);
+      if (!res.nextCursor) break;
+      cursor = res.nextCursor;
+    }
+    return out;
   }
 
   /** Hermes implements the (unstable) session/set_model with `provider:model` ids. */

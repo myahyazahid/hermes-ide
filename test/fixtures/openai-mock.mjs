@@ -48,7 +48,10 @@ export async function startOpenAIMock({ port = 0, apiKey, models = [{ id: "mock-
       }
       // Hermes also calls the model for auxiliary work (session titles) without tools; those must
       // not consume the replies scripted for the agent loop.
-      const isAgentTurn = Array.isArray(body?.tools) && body.tools.length > 0;
+      // Hermes' background memory review also runs with tools; it is not an agent turn either.
+      const lastUser = [...(body?.messages ?? [])].reverse().find((x) => x.role === "user")?.content;
+      const isBackgroundReview = typeof lastUser === "string" && lastUser.startsWith("Review the conversation above");
+      const isAgentTurn = Array.isArray(body?.tools) && body.tools.length > 0 && !isBackgroundReview;
       const reply = isAgentTurn && queue.length ? queue.shift() : isAgentTurn ? defaultReply : { text: auxReply };
       if (reply.rejectTools && body?.tools) {
         return json(res, 400, { error: { message: "This model does not support tools", code: "tools_unsupported" } });

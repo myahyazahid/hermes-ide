@@ -2,7 +2,7 @@
   "name": "hermes-ide",
   "displayName": "Hermes IDE",
   "description": "%ext.description%",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "yahya",
   "private": true,
   "license": "UNLICENSED",
@@ -39,6 +39,12 @@
           "type": "webview",
           "id": "hermes.chat",
           "name": "%view.chat%"
+        }
+      ],
+      "explorer": [
+        {
+          "id": "hermes.sessions",
+          "name": "%view.sessions%"
         }
       ]
     },
@@ -102,6 +108,49 @@
         "command": "hermes.diff.toggleHunk",
         "title": "%cmd.toggleHunk%",
         "category": "Hermes"
+      },
+      {
+        "command": "hermes.inlineEdit",
+        "title": "%cmd.inlineEdit%",
+        "category": "Hermes",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "hermes.addSelectionToChat",
+        "title": "%cmd.addSelectionToChat%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.addToChat",
+        "title": "%cmd.addToChat%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.sessions.refresh",
+        "title": "%cmd.sessionsRefresh%",
+        "category": "Hermes",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "hermes.sessions.open",
+        "title": "%cmd.sessionsOpen%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.sessions.delete",
+        "title": "%cmd.sessionsDelete%",
+        "category": "Hermes",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "hermes.switchProfile",
+        "title": "%cmd.switchProfile%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.removeApprovalHook",
+        "title": "%cmd.removeApprovalHook%",
+        "category": "Hermes"
       }
     ],
     "menus": {
@@ -114,6 +163,16 @@
         {
           "command": "hermes.configureEndpoint",
           "when": "view == hermes.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "hermes.newSession",
+          "when": "view == hermes.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hermes.sessions.refresh",
+          "when": "view == hermes.sessions",
           "group": "navigation@2"
         }
       ],
@@ -141,6 +200,48 @@
         {
           "command": "hermes.diff.toggleHunk",
           "when": "false"
+        },
+        {
+          "command": "hermes.sessions.open",
+          "when": "false"
+        },
+        {
+          "command": "hermes.sessions.delete",
+          "when": "false"
+        },
+        {
+          "command": "hermes.addToChat",
+          "when": "false"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "hermes.sessions.delete",
+          "when": "view == hermes.sessions && viewItem =~ /^hermesSession/",
+          "group": "inline"
+        },
+        {
+          "command": "hermes.sessions.delete",
+          "when": "view == hermes.sessions && viewItem =~ /^hermesSession/",
+          "group": "9_delete"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "hermes.inlineEdit",
+          "when": "editorTextFocus && resourceScheme == file",
+          "group": "hermes@1"
+        },
+        {
+          "command": "hermes.addSelectionToChat",
+          "when": "editorTextFocus && resourceScheme == file",
+          "group": "hermes@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "hermes.addToChat",
+          "group": "hermes@1"
         }
       ]
     },
@@ -156,6 +257,18 @@
         "key": "ctrl+backspace",
         "mac": "cmd+backspace",
         "when": "hermes.diffReviewActive && editorFocus && resourceScheme == hermes-diff"
+      },
+      {
+        "command": "hermes.inlineEdit",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "editorTextFocus && editorHasSelection && !editorReadonly && config.hermes.inlineEdit.useCtrlK && resourceScheme == file"
+      },
+      {
+        "command": "hermes.addSelectionToChat",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorTextFocus && resourceScheme == file"
       }
     ],
     "configuration": {
@@ -166,34 +279,6 @@
           "default": "",
           "markdownDescription": "%cfg.path%"
         },
-        "hermes.endpoint.mode": {
-          "type": "string",
-          "enum": [
-            "hermes",
-            "custom"
-          ],
-          "default": "hermes",
-          "enumDescriptions": [
-            "%cfg.mode.hermes%",
-            "%cfg.mode.custom%"
-          ],
-          "markdownDescription": "%cfg.mode%"
-        },
-        "hermes.endpoint.baseUrl": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "%cfg.baseUrl%"
-        },
-        "hermes.endpoint.model": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "%cfg.model%"
-        },
-        "hermes.endpoint.contextLength": {
-          "type": "number",
-          "default": 0,
-          "markdownDescription": "%cfg.contextLength%"
-        },
         "hermes.language": {
           "type": "string",
           "enum": [
@@ -203,6 +288,109 @@
           ],
           "default": "auto",
           "markdownDescription": "%cfg.language%"
+        },
+        "hermes.activeProfile": {
+          "type": "string",
+          "default": "hermes",
+          "markdownDescription": "%cfg.activeProfile%"
+        },
+        "hermes.profiles": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "%cfg.profiles%",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "baseUrl",
+              "model"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "baseUrl": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "contextLength": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "hermes.mcpServers": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "%cfg.mcpServers%",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "stdio",
+                  "http",
+                  "sse"
+                ]
+              },
+              "command": {
+                "type": "string"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "url": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "hermes.terminal.askEveryCommand": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%cfg.askEveryCommand%"
+        },
+        "hermes.nodePath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%cfg.nodePath%"
+        },
+        "hermes.inlineEdit.useCtrlK": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%cfg.useCtrlK%"
         }
       }
     }
@@ -217,7 +405,8 @@
     "test:vscode": "node esbuild.mjs && node test/vscode/runTest.mjs"
   },
   "dependencies": {
-    "diff": "^8.0.2"
+    "diff": "^8.0.2",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "^1.7.0",

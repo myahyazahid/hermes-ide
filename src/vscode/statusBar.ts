@@ -12,7 +12,7 @@ export class HermesStatusBar implements vscode.Disposable {
     this.connection.name = "Hermes · ACP";
     this.model.name = "Hermes · model";
     this.connection.command = "hermes.openChat";
-    this.model.command = "hermes.openChat";
+    this.model.command = "hermes.switchProfile";
   }
 
   update(state: ViewState): void {
@@ -40,7 +40,9 @@ export class HermesStatusBar implements vscode.Disposable {
     const label = state.models.find((m) => m.id === state.currentModelId)?.label ?? shortModelName(state.currentModelId);
     if (state.phase === "ready" && label) {
       this.model.text = label;
-      this.model.tooltip = state.currentModelId;
+      const profile = state.endpoint.profiles.find((p) => p.id === state.endpoint.activeProfileId);
+      this.model.tooltip = `${profile?.name ?? ""} · ${state.currentModelId ?? ""}
+${t(loc, "statusbar.switchProfile")}`;
       this.model.show();
     } else {
       this.model.hide();

@@ -1,33 +1,49 @@
 // Orchestrates one Hermes ACP process for the workspace: lifecycle (F-01..F-03, F-11), the chat
-// transcript (F-06, F-07), permission cards (F-08), diff review (F-09), Stop (F-10) and the
-// Custom API page (F-04, F-05). The webview and status bar only render what this class publishes.
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+// transcript (F-06, F-07), permission cards (F-08), diff review (F-09), Stop (F-10), endpoint
+// profiles and the Custom API page (F-04, F-05, F-16), context mentions (F-12), inline edits
+// (F-13), session history (F-14) and MCP servers (F-15). Views only render what this publishes.
+import { execFile } from "node:child_process";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type * as acp from "@agentclientprotocol/sdk";
 import { AcpClient, type HermesModelState } from "../core/acpClient";
-import { CommandAllowlist, dangerousReason } from "../core/commandPolicy";
+import { CommandAllowlist, dangerousReason, normalizeCommand } from "../core/commandPolicy";
 import { testConnection } from "../core/connectionTest";
+import { buildPromptBlocks, contextLabel, decodeFile, MAX_FILE_BYTES, type FileContent } from "../core/context";
 import {
-  buildLaunchEnv, buildProfileConfigYaml, defaultHermesHome, maskKey, readHermesModelConfig, shortModelName,
-  validateCustomEndpoint, type CustomEndpoint, type EndpointMode,
+  buildLaunchEnv, buildProfileConfigYaml, defaultHermesHome, readHermesModelConfig, shortModelName, validateCustomEndpoint,
+  type CustomEndpoint,
 } from "../core/endpoint";
-import { isSupportedVersion, locateHermes, readHermesVersion, SUPPORTED_HERMES } from "../core/hermesLocator";
+import { isSupportedVersion, locateHermes, needsShell, readHermesVersion, SUPPORTED_HERMES } from "../core/hermesLocator";
 import { applyHunks, computeHunks, diffStat, sameText } from "../core/hunks";
+import { sanitizeMcpServers, toAcpMcpServers, validateMcpServer, type McpServerSetting } from "../core/mcp";
 import { cancelled, parsePermission, pickOption, selected, type ParsedPermission } from "../core/permission";
+import { HERMES_PROFILE_ID, toEndpoint } from "../core/profiles";
 import { Transcript } from "../core/transcript";
-import type { HostToView, ModelOption, PermissionAction, TranscriptItem, ViewState, ViewToHost } from "../shared/protocol";
+import type {
+  ContextRef, HostToView, McpServerView, ModelOption, PermissionAction, TerminalApprovalState, TranscriptItem, ViewState,
+  ViewToHost,
+} from "../shared/protocol";
 import { resolveLocale, t, type Locale, type StringKey } from "../shared/strings";
 import type { AgentLog } from "./agentLog";
 import type { DiffReviewManager } from "./diffReview";
+import { FileIndex } from "./fileIndex";
+import { ProfileStore } from "./profileStore";
+import type { SessionSummary } from "./sessionsView";
+import { TerminalApprovalSetup } from "./terminalApprovalSetup";
 
-const SECRET_KEY = "hermes.endpoint.apiKey";
 const ALLOWLIST_KEY = "hermes.allowlist";
 const PREFERRED_MODEL_KEY = "hermes.preferredModel";
 const LAST_SESSION_KEY = "hermes.lastSessionId";
+const HIDDEN_SESSIONS_KEY = "hermes.hiddenSessions";
+/** How long a command approved on the hook card also answers Hermes' own danger check for it. */
+const HOOK_APPROVAL_TTL_MS = 120_000;
 
 interface PendingPermission {
   itemId: string;
+  sessionId: string;
   parsed: ParsedPermission;
   options: acp.PermissionOption[];
   respond(response: acp.RequestPermissionResponse): void;
@@ -35,21 +51,39 @@ interface PendingPermission {
   absPath?: string;
 }
 
+export interface InlineEditRequest {
+  path: string;
+  /** 1-based, inclusive. */
+  startLine: number;
+  endLine: number;
+  text: string;
+  languageId: string;
+  instruction: string;
+}
+
 export class HermesService implements vscode.Disposable {
   private client: AcpClient | undefined;
   private hermesPath: string | undefined;
+  private launchEnvironment: NodeJS.ProcessEnv | undefined;
   private starting: Promise<boolean> | undefined;
   private transcript = new Transcript();
   private readonly pending = new Map<string, PendingPermission>();
   private readonly notesForNextPrompt: string[] = [];
+  private readonly hookApprovals = new Map<string, number>();
+  private readonly inlineReplies = new Map<string, string>();
   private suppressUpdates = false;
   private seq = 0;
   private post: ((msg: HostToView) => void) | undefined;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private availableModels: HermesModelState["availableModels"] = [];
   private readonly stateChanged = new vscode.EventEmitter<ViewState>();
+  private readonly sessionsChanged = new vscode.EventEmitter<void>();
   readonly onDidChangeState = this.stateChanged.event;
-  private readonly disposables: vscode.Disposable[] = [this.stateChanged];
+  readonly onDidChangeSessions = this.sessionsChanged.event;
+  private readonly disposables: vscode.Disposable[] = [this.stateChanged, this.sessionsChanged];
+  readonly profiles: ProfileStore;
+  private readonly approval: TerminalApprovalSetup;
+  private readonly files: FileIndex;
   state: ViewState;
 
   constructor(
@@ -57,12 +91,17 @@ export class HermesService implements vscode.Disposable {
     private readonly log: AgentLog,
     private readonly reviews: DiffReviewManager,
   ) {
+    this.profiles = new ProfileStore(context.secrets);
+    this.approval = new TerminalApprovalSetup(context, log);
+    this.files = new FileIndex(() => this.cwd);
     this.state = {
       phase: "checking",
       busy: false,
       models: [],
-      endpoint: { mode: "hermes", baseUrl: "", model: "", keyHint: "", hasKey: false, contextLength: 0 },
+      endpoint: { activeProfileId: HERMES_PROFILE_ID, profiles: [] },
       test: { running: false },
+      terminalApproval: "disabled",
+      mcpServers: [],
     };
     this.disposables.push(
       vscode.workspace.onDidGrantWorkspaceTrust(() => void this.refresh()),
@@ -70,6 +109,7 @@ export class HermesService implements vscode.Disposable {
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("hermes.path")) void this.restartForWorkspaceChange();
         else if (e.affectsConfiguration("hermes.language")) this.sendInit();
+        else if (e.affectsConfiguration("hermes.profiles") || e.affectsConfiguration("hermes.mcpServers")) void this.loadSettingsView();
       }),
     );
   }
@@ -89,6 +129,14 @@ export class HermesService implements vscode.Disposable {
 
   get processId(): number | undefined {
     return this.client?.pid;
+  }
+
+  get currentSessionId(): string | undefined {
+    return this.state.sessionId;
+  }
+
+  get busy(): boolean {
+    return this.state.busy;
   }
 
   private get cwd(): string | undefined {
@@ -112,7 +160,7 @@ export class HermesService implements vscode.Disposable {
         if (this.state.phase === "stopped") void this.ensureStarted();
         return;
       case "send":
-        return this.send(msg.text);
+        return this.send(msg.text, msg.context ?? []);
       case "stop":
         return this.stop();
       case "newSession":
@@ -121,10 +169,27 @@ export class HermesService implements vscode.Disposable {
         return this.handlePermissionAction(msg.id, msg.action);
       case "selectModel":
         return this.selectModel(msg.modelId);
-      case "saveEndpoint":
-        return this.saveEndpoint(msg);
+      case "mentionQuery": {
+        const items = await this.files.search(msg.query).catch(() => []);
+        this.post?.({ type: "mentionResults", requestId: msg.requestId, items });
+        return;
+      }
+      case "selectProfile":
+        return this.selectProfile(msg.id);
+      case "saveProfile":
+        return this.saveProfile(msg);
+      case "deleteProfile":
+        return this.deleteProfile(msg.id);
       case "testEndpoint":
         return this.testEndpoint(msg);
+      case "enableTerminalApproval":
+        return this.enableTerminalApproval();
+      case "dismissTerminalApproval":
+        await this.approval.dismiss();
+        this.setState({ terminalApproval: "dismissed" });
+        return;
+      case "saveMcpServers":
+        return this.saveMcpServers(msg.servers);
       case "restart":
         return this.restart();
       case "recheck":
@@ -139,6 +204,11 @@ export class HermesService implements vscode.Disposable {
         await vscode.commands.executeCommand("workbench.trust.manage");
         return;
     }
+  }
+
+  /** Adds a context chip to the composer (selection command, explorer "Add to chat"). */
+  addContext(ref: ContextRef): void {
+    this.post?.({ type: "addContext", ref });
   }
 
   private sendInit(): void {
@@ -169,7 +239,8 @@ export class HermesService implements vscode.Disposable {
 
   /** Re-evaluates preconditions (trust, folder, binary, endpoint); starts Hermes if the panel is open. */
   async refresh(autoStart = true): Promise<void> {
-    await this.loadEndpointView();
+    await this.profiles.migrateLegacy().catch((e: Error) => this.log.info(`profile migration failed: ${e.message}`));
+    await this.loadSettingsView();
     if (!vscode.workspace.isTrusted) return this.setState({ phase: "untrusted", phaseDetail: undefined });
     if (!this.cwd) return this.setState({ phase: "noWorkspace", phaseDetail: undefined, cwd: undefined });
     this.setState({ cwd: this.cwd });
@@ -194,10 +265,11 @@ export class HermesService implements vscode.Disposable {
       this.log.info(`could not read hermes version: ${(error as Error).message}`);
     }
 
-    const mode = this.endpointMode();
-    if (mode === "custom" && validateCustomEndpoint(this.customEndpointSettings())) {
+    const profile = this.profiles.active();
+    if (profile && validateCustomEndpoint(toEndpoint(profile))) {
       return this.setState({ phase: "needsSetup", phaseDetail: undefined });
     }
+    if (!profile) this.setState({ terminalApproval: await this.approval.hermesConfigState() });
     this.setState({ phase: this.client?.isAlive ? "ready" : "stopped" });
     if (autoStart && this.post && !this.client) void this.ensureStarted();
   }
@@ -215,9 +287,11 @@ export class HermesService implements vscode.Disposable {
     const cwd = this.cwd;
     if (!cwd || !this.hermesPath) return false;
     this.setState({ phase: "starting", phaseDetail: undefined });
-    const mode = this.endpointMode();
+    const profile = this.profiles.active();
     try {
-      const env = await this.launchEnv(mode);
+      const { env, approval } = await this.launchEnv();
+      this.launchEnvironment = env;
+      this.setState({ terminalApproval: approval });
       const client = await AcpClient.start(
         { command: this.hermesPath, cwd, env },
         {
@@ -229,7 +303,7 @@ export class HermesService implements vscode.Disposable {
         { name: "hermes-ide", version: String(this.context.extension.packageJSON.version ?? "0.0.0") },
       );
       this.client = client;
-      this.log.info(`hermes acp started (pid ${client.pid}, mode ${mode}, cwd ${cwd})`);
+      this.log.info(`hermes acp started (pid ${client.pid}, profile ${profile?.id ?? HERMES_PROFILE_ID}, cwd ${cwd}, terminal approval ${approval})`);
 
       const method = (client.init?.authMethods ?? []).find((m) => !("type" in m && m.type === "terminal"));
       const authed = method ? await client.authenticate(method.id).catch(() => null) : null;
@@ -237,7 +311,7 @@ export class HermesService implements vscode.Disposable {
         this.log.info("hermes has no configured provider (authenticate failed)");
         await client.stop();
         this.client = undefined;
-        this.setState({ phase: "needsSetup", phaseDetail: mode === "hermes" ? this.tr("banner.notConfigured") : undefined });
+        this.setState({ phase: "needsSetup", phaseDetail: profile ? undefined : this.tr("banner.notConfigured") });
         return false;
       }
 
@@ -246,7 +320,7 @@ export class HermesService implements vscode.Disposable {
       if (resumeSessionId) {
         this.suppressUpdates = true; // the transcript is still in memory; skip Hermes' replay
         try {
-          const loaded = await client.loadSession(cwd, resumeSessionId);
+          const loaded = await client.loadSession(cwd, resumeSessionId, this.mcpForAcp());
           if (loaded) {
             sessionId = resumeSessionId;
             models = loaded.models;
@@ -258,7 +332,7 @@ export class HermesService implements vscode.Disposable {
         }
       }
       if (!sessionId) {
-        const created = await client.newSession(cwd);
+        const created = await client.newSession(cwd, this.mcpForAcp());
         sessionId = created.sessionId;
         models = created.models;
         if (resumeSessionId) this.resetTranscript();
@@ -268,6 +342,7 @@ export class HermesService implements vscode.Disposable {
       this.applyModels(models);
       this.setState({ phase: "ready", sessionId, busy: false });
       await this.applyPreferredModel();
+      this.sessionsChanged.fire();
       return true;
     } catch (error) {
       const message = (error as Error).message;
@@ -284,9 +359,10 @@ export class HermesService implements vscode.Disposable {
     this.log.info(`hermes exited (code ${info.code}, signal ${info.signal ?? "-"}, expected ${info.expected})`);
     if (this.client !== client) return;
     this.client = undefined;
-    this.cancelAllPending();
+    this.cancelPending();
     this.transcript.endTurn();
     this.scheduleFlush();
+    this.sessionsChanged.fire();
     if (info.expected) {
       this.setState({ phase: "stopped", busy: false });
       return;
@@ -307,16 +383,21 @@ export class HermesService implements vscode.Disposable {
     }
   }
 
-  private async restartForWorkspaceChange(): Promise<void> {
+  /** Endpoint changed: the old session belongs to another Hermes home or provider, so start clean. */
+  private async restartFresh(): Promise<void> {
     await this.shutdown();
     this.resetTranscript();
-    this.setState({ sessionId: undefined });
+    this.setState({ sessionId: undefined, models: [], currentModelId: undefined, usage: undefined, sessionTitle: undefined });
     await this.refresh();
+  }
+
+  private async restartForWorkspaceChange(): Promise<void> {
+    await this.restartFresh();
   }
 
   async shutdown(): Promise<void> {
     const client = this.client;
-    this.cancelAllPending();
+    this.cancelPending();
     if (client) {
       if (this.state.busy && this.state.sessionId) client.cancel(this.state.sessionId);
       await client.stop();
@@ -329,19 +410,23 @@ export class HermesService implements vscode.Disposable {
 
   // ---- conversation -------------------------------------------------------------------------
 
-  async send(text: string): Promise<void> {
+  async send(text: string, context: ContextRef[] = []): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed || this.state.busy) return;
     if (!(await this.ensureStarted()) || !this.client || !this.state.sessionId) return;
 
-    this.transcript.addUser(trimmed);
+    const cwd = this.cwd;
+    this.transcript.addUser(trimmed, context.map((c) => ({ label: contextLabel(c, cwd), path: c.path })));
     this.scheduleFlush();
     const notes = this.notesForNextPrompt.splice(0);
     const body = notes.length ? `${notes.join("\n")}\n\n${trimmed}` : trimmed;
+    if (context.some((c) => c.kind === "folder")) await this.files.ensure();
+    const blocks = buildPromptBlocks(body, context, { cwd, folderListing: (f) => this.files.listFolder(f), readFile: readContextFile });
     this.setState({ busy: true });
+    this.sessionsChanged.fire();
     const client = this.client;
     try {
-      const res = await client.prompt(this.state.sessionId, [{ type: "text", text: body }]);
+      const res = await client.prompt(this.state.sessionId, blocks);
       if (res.stopReason === "cancelled") this.notice("info", this.tr("notice.stopped"));
       else if (res.stopReason === "refusal") this.notice("warn", "refusal");
     } catch (error) {
@@ -350,6 +435,7 @@ export class HermesService implements vscode.Disposable {
       this.transcript.endTurn();
       this.scheduleFlush();
       this.setState({ busy: false });
+      this.sessionsChanged.fire();
     }
   }
 
@@ -357,14 +443,14 @@ export class HermesService implements vscode.Disposable {
   async stop(): Promise<void> {
     if (!this.client || !this.state.sessionId || !this.state.busy) return;
     this.client.cancel(this.state.sessionId);
-    this.cancelAllPending();
+    this.cancelPending(this.state.sessionId);
   }
 
   async newSession(): Promise<void> {
     if (this.state.busy) await this.stop();
     if (!(await this.ensureStarted()) || !this.client) return;
     try {
-      const created = await this.client.newSession(this.cwd!);
+      const created = await this.client.newSession(this.cwd!, this.mcpForAcp());
       await this.context.workspaceState.update(LAST_SESSION_KEY, created.sessionId);
       await this.pinAskMode(this.client, created.sessionId);
       this.notesForNextPrompt.length = 0;
@@ -372,6 +458,7 @@ export class HermesService implements vscode.Disposable {
       this.applyModels(created.models);
       this.setState({ sessionId: created.sessionId, sessionTitle: undefined, usage: undefined });
       await this.applyPreferredModel();
+      this.sessionsChanged.fire();
     } catch (error) {
       this.notice("error", this.tr("notice.promptFailed", (error as Error).message));
     }
@@ -395,7 +482,7 @@ export class HermesService implements vscode.Disposable {
     try {
       await this.client.setModel(this.state.sessionId, modelId);
       this.setState({ currentModelId: modelId });
-      if (this.endpointMode() === "hermes") await this.context.globalState.update(PREFERRED_MODEL_KEY, modelId);
+      if (!this.profiles.active()) await this.context.globalState.update(PREFERRED_MODEL_KEY, modelId);
     } catch (error) {
       this.notice("error", this.tr("notice.modelFailed", (error as Error).message));
     }
@@ -419,9 +506,9 @@ export class HermesService implements vscode.Disposable {
     this.setState({ models: options, currentModelId: current });
   }
 
-  /** Mode "hermes": re-applies the model the user last picked (e.g. customer-service). */
+  /** Profile "hermes": re-applies the model the user last picked (e.g. customer-service). */
   private async applyPreferredModel(): Promise<void> {
-    if (this.endpointMode() !== "hermes") return;
+    if (this.profiles.active()) return;
     const preferred = this.context.globalState.get<string>(PREFERRED_MODEL_KEY);
     if (!preferred || preferred === this.state.currentModelId) return;
     if (!this.availableModels.some((m) => m.modelId === preferred)) return;
@@ -429,11 +516,132 @@ export class HermesService implements vscode.Disposable {
   }
 
   private onSessionUpdate(n: acp.SessionNotification): void {
+    if (this.inlineReplies.has(n.sessionId)) {
+      const u = n.update;
+      if (u.sessionUpdate === "agent_message_chunk" && u.content.type === "text") {
+        this.inlineReplies.set(n.sessionId, this.inlineReplies.get(n.sessionId)! + u.content.text);
+      }
+      return;
+    }
     if (this.suppressUpdates || n.sessionId !== this.state.sessionId) return;
     const effects = this.transcript.apply(n.update);
     if (effects.usage) this.setState({ usage: effects.usage });
-    if (effects.title) this.setState({ sessionTitle: effects.title });
+    if (effects.title) {
+      this.setState({ sessionTitle: effects.title });
+      this.sessionsChanged.fire();
+    }
     this.scheduleFlush();
+  }
+
+  // ---- sessions (F-14) ----------------------------------------------------------------------
+
+  async listSessions(): Promise<SessionSummary[]> {
+    if (!this.client?.isAlive || !this.cwd) return [];
+    const hidden = new Set(this.context.workspaceState.get<string[]>(HIDDEN_SESSIONS_KEY) ?? []);
+    const sessions = await this.client.listSessions(this.cwd);
+    const out = sessions
+      .filter((s) => !hidden.has(s.sessionId))
+      .map((s) => ({ id: s.sessionId, title: s.title ?? "", updatedAt: s.updatedAt ?? undefined }));
+    // The current session has no history until its first prompt, but belongs in the list.
+    const current = this.state.sessionId;
+    if (current && !out.some((s) => s.id === current)) {
+      out.unshift({ id: current, title: this.state.sessionTitle ?? this.tr("sessions.new"), updatedAt: new Date().toISOString() });
+    }
+    return out;
+  }
+
+  /** Resumes a session from history: Hermes replays it into a fresh transcript. */
+  async openSession(sessionId: string): Promise<void> {
+    if (sessionId === this.state.sessionId) return;
+    if (this.state.busy) await this.stop();
+    if (!(await this.ensureStarted()) || !this.client || !this.cwd) return;
+    this.cancelPending();
+    this.notesForNextPrompt.length = 0;
+    this.resetTranscript();
+    const previous = this.state.sessionId;
+    // Set before loading so the replayed updates pass the session filter.
+    this.setState({ sessionId, sessionTitle: undefined, usage: undefined });
+    try {
+      const loaded = await this.client.loadSession(this.cwd, sessionId, this.mcpForAcp());
+      if (!loaded) throw new Error("session not found");
+      await this.pinAskMode(this.client, sessionId);
+      this.applyModels(loaded.models);
+      this.transcript.endTurn();
+      this.scheduleFlush();
+      await this.context.workspaceState.update(LAST_SESSION_KEY, sessionId);
+    } catch (error) {
+      this.setState({ sessionId: previous });
+      this.notice("error", this.tr("notice.sessionOpenFailed", (error as Error).message));
+    }
+    this.sessionsChanged.fire();
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    if (!this.hermesPath) return;
+    if (sessionId === this.state.sessionId) await this.newSession();
+    await this.hideSession(sessionId);
+    const command = this.hermesPath;
+    const shell = needsShell(command);
+    await new Promise<void>((resolve) => {
+      execFile(shell ? `"${command}"` : command, ["sessions", "delete", sessionId, "--yes"],
+        { env: this.launchEnvironment ?? process.env, windowsHide: true, shell, timeout: 60_000 },
+        (error, _stdout, stderr) => {
+          if (error) this.log.info(`hermes sessions delete ${sessionId} failed: ${stderr || error.message}`);
+          else this.log.info(`session ${sessionId} deleted`);
+          resolve();
+        });
+    });
+    this.sessionsChanged.fire();
+  }
+
+  private async hideSession(sessionId: string): Promise<void> {
+    const hidden = this.context.workspaceState.get<string[]>(HIDDEN_SESSIONS_KEY) ?? [];
+    if (!hidden.includes(sessionId)) {
+      await this.context.workspaceState.update(HIDDEN_SESSIONS_KEY, [...hidden, sessionId].slice(-500));
+    }
+  }
+
+  // ---- inline edit (F-13) -------------------------------------------------------------------
+
+  /**
+   * Runs one inline edit in its own short-lived Hermes session so the chat history stays clean.
+   * The proposed change arrives as a normal edit permission and opens as a diff in place of the
+   * editor. Resolves with Hermes' reply text.
+   */
+  async inlineEdit(req: InlineEditRequest, token: vscode.CancellationToken): Promise<string> {
+    if (!(await this.ensureStarted()) || !this.client || !this.cwd) throw new Error(this.tr("inline.notReady"));
+    const client = this.client;
+    const created = await client.newSession(this.cwd, this.mcpForAcp());
+    const sessionId = created.sessionId;
+    await this.hideSession(sessionId);
+    this.inlineReplies.set(sessionId, "");
+    await this.pinAskMode(client, sessionId);
+    if (this.state.currentModelId && created.models?.currentModelId !== this.state.currentModelId) {
+      await client.setModel(sessionId, this.state.currentModelId).catch(() => {});
+    }
+    const cancel = token.onCancellationRequested(() => {
+      client.cancel(sessionId);
+      this.cancelPending(sessionId);
+    });
+    const rel = path.relative(this.cwd, req.path).split(path.sep).join("/");
+    const fence = "`".repeat(Math.max(3, ...[...req.text.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+    const prompt = [
+      "Inline edit requested from the editor.",
+      `File: ${rel} (absolute path: ${req.path})`,
+      `Lines ${req.startLine}-${req.endLine} currently contain:`,
+      `${fence}${req.languageId}`,
+      req.text,
+      fence,
+      `Instruction: ${req.instruction}`,
+      "Rules: change only those lines of this file, using the patch tool (mode replace). Do not edit other files and do not run commands. When done, reply with one short sentence.",
+    ].join("\n");
+    try {
+      await client.prompt(sessionId, [{ type: "text", text: prompt }]);
+      return this.inlineReplies.get(sessionId) ?? "";
+    } finally {
+      cancel.dispose();
+      this.inlineReplies.delete(sessionId);
+    }
   }
 
   // ---- permissions (F-08, F-09) -------------------------------------------------------------
@@ -441,7 +649,7 @@ export class HermesService implements vscode.Disposable {
   private onPermission(req: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> {
     const parsed = parsePermission(req);
     const itemId = `perm:${++this.seq}`;
-    this.log.info(`permission request ${itemId}: ${parsed.variant} ${JSON.stringify(req.options.map((o) => o.optionId))}`);
+    this.log.info(`permission request ${itemId}: ${parsed.variant}${parsed.variant === "execute" && parsed.viaHook ? " (hook)" : ""} ${JSON.stringify(req.options.map((o) => o.optionId))}`);
 
     return new Promise((resolve) => {
       let settled = false;
@@ -451,18 +659,30 @@ export class HermesService implements vscode.Disposable {
         this.pending.delete(itemId);
         resolve(response);
       };
-      const entry: PendingPermission = { itemId, parsed, options: req.options, respond };
+      const entry: PendingPermission = { itemId, sessionId: req.sessionId, parsed, options: req.options, respond };
 
       if (parsed.variant === "execute") {
-        const danger = dangerousReason(parsed.command);
-        const base = { kind: "permission" as const, id: itemId, variant: "execute" as const, title: this.tr("perm.execute"), command: parsed.command };
-        if (!danger && this.allowlist().allows(parsed.command)) {
-          this.transcript.upsert({ ...base, actions: [], state: "allowed", resolution: this.tr("perm.autoAllowed") });
-          this.scheduleFlush();
+        const key = normalizeCommand(parsed.command);
+        // Hermes' own danger check fires after our hook for risky commands: the user already
+        // answered the hook card, so don't ask twice.
+        if (!parsed.viaHook && (this.hookApprovals.get(key) ?? 0) > Date.now()) {
+          this.hookApprovals.delete(key);
           respond(selected(pickOption(req.options, "allow_once")));
           return;
         }
-        const actions: PermissionAction[] = danger ? ["allow_once", "reject"] : ["allow_once", "allow_always_ws", "reject"];
+        const danger = dangerousReason(parsed.command);
+        const title = parsed.tool === "execute_code" ? this.tr("perm.executeCode") : this.tr("perm.execute");
+        const base = { kind: "permission" as const, id: itemId, variant: "execute" as const, title, command: parsed.command };
+        if (!danger && parsed.tool !== "execute_code" && this.allowlist().allows(parsed.command)) {
+          this.transcript.upsert({ ...base, actions: [], state: "allowed", resolution: this.tr("perm.autoAllowed") });
+          this.scheduleFlush();
+          if (parsed.viaHook) this.hookApprovals.set(key, Date.now() + HOOK_APPROVAL_TTL_MS);
+          respond(selected(pickOption(req.options, "allow_once")));
+          return;
+        }
+        const actions: PermissionAction[] = danger || parsed.tool === "execute_code"
+          ? ["allow_once", "reject"]
+          : ["allow_once", "allow_always_ws", "reject"];
         this.transcript.upsert({
           ...base, actions, state: "pending", dangerReason: danger ? this.tr("perm.dangerous", danger) : undefined,
         });
@@ -520,18 +740,24 @@ export class HermesService implements vscode.Disposable {
       else this.reviews.decide(entry.reviewId, action !== "reject");
       return;
     }
+    const allowed = (resolution: string, choice: "allow_once" | "allow_session" = "allow_once") => {
+      if (entry.parsed.variant === "execute" && entry.parsed.viaHook) {
+        this.hookApprovals.set(normalizeCommand(entry.parsed.command), Date.now() + HOOK_APPROVAL_TTL_MS);
+      }
+      this.resolveCard(entry, selected(pickOption(entry.options, choice)), "allowed", resolution);
+    };
     switch (action) {
       case "allow_once":
-        return this.resolveCard(entry, selected(pickOption(entry.options, "allow_once")), "allowed", this.tr("perm.allowed"));
+        return allowed(this.tr("perm.allowed"));
       case "allow_session":
-        return this.resolveCard(entry, selected(pickOption(entry.options, "allow_session")), "allowed", this.tr("perm.allowedSession"));
+        return allowed(this.tr("perm.allowedSession"), "allow_session");
       case "allow_always_ws": {
         // Stored per workspace by the IDE; Hermes only gets allow_once so its global allowlist is untouched.
         if (entry.parsed.variant === "execute") {
           const list = this.allowlist();
           if (list.add(entry.parsed.command)) await this.context.workspaceState.update(ALLOWLIST_KEY, list.toJSON());
         }
-        return this.resolveCard(entry, selected(pickOption(entry.options, "allow_once")), "allowed", this.tr("perm.allowedAlways"));
+        return allowed(this.tr("perm.allowedAlways"));
       }
       case "reject":
         return this.resolveCard(entry, selected(pickOption(entry.options, "reject")), "rejected", this.tr("perm.rejected"));
@@ -547,8 +773,10 @@ export class HermesService implements vscode.Disposable {
     this.scheduleFlush();
   }
 
-  private cancelAllPending(): void {
+  /** Cancels pending permission requests, for one session or all. */
+  private cancelPending(sessionId?: string): void {
     for (const entry of [...this.pending.values()]) {
+      if (sessionId && entry.sessionId !== sessionId) continue;
       if (entry.reviewId) this.reviews.cancel(entry.reviewId); // resolves the card via the review promise
       else this.resolveCard(entry, cancelled(), "cancelled", this.tr("perm.cancelled"));
     }
@@ -586,7 +814,7 @@ export class HermesService implements vscode.Disposable {
         }
         return;
       }
-      if (!this.state.busy) {
+      if (!this.state.busy && !this.inlineReplies.size) {
         idleSince ??= Date.now();
         if (Date.now() - idleSince > 1500) break;
       }
@@ -614,78 +842,88 @@ export class HermesService implements vscode.Disposable {
     void vscode.window.showInformationMessage(this.tr("allowlist.cleared"));
   }
 
-  // ---- endpoint (F-04, F-05) ----------------------------------------------------------------
+  // ---- terminal approval (user story 4) -----------------------------------------------------
 
-  private endpointMode(): EndpointMode {
-    return vscode.workspace.getConfiguration("hermes").get<string>("endpoint.mode") === "custom" ? "custom" : "hermes";
+  private async enableTerminalApproval(): Promise<void> {
+    try {
+      await this.approval.enableInHermesConfig();
+      this.notice("info", this.tr("notice.approvalEnabled"));
+      await this.restart();
+    } catch (error) {
+      this.notice("error", this.tr("notice.approvalFailed", (error as Error).message));
+    }
   }
 
-  private customEndpointSettings(apiKey?: string): CustomEndpoint {
-    const cfg = vscode.workspace.getConfiguration("hermes");
-    return {
-      baseUrl: cfg.get<string>("endpoint.baseUrl") ?? "",
-      model: cfg.get<string>("endpoint.model") ?? "",
-      contextLength: cfg.get<number>("endpoint.contextLength") ?? 0,
-      apiKey,
-    };
+  async removeTerminalApprovalHook(): Promise<void> {
+    const removed = await this.approval.removeFromHermesConfig();
+    void vscode.window.showInformationMessage(this.tr(removed ? "approval.removed" : "approval.notInstalled"));
+    if (removed && !this.profiles.active()) await this.restart();
   }
 
-  private async loadEndpointView(): Promise<void> {
-    const key = await this.context.secrets.get(SECRET_KEY);
-    this.log.setSecrets([key]);
-    const custom = this.customEndpointSettings();
-    const home = defaultHermesHome();
-    const configPath = path.join(home, "config.yaml");
+  // ---- endpoint profiles (F-04, F-05, F-16) -------------------------------------------------
+
+  private async loadSettingsView(): Promise<void> {
+    this.log.setSecrets(await this.profiles.allKeys());
+    const configPath = path.join(defaultHermesHome(), "config.yaml");
     const hermesConfig = { ...readHermesModelConfig(await readFile(configPath, "utf8").catch(() => "")), path: configPath };
     this.setState({
       endpoint: {
-        mode: this.endpointMode(), baseUrl: custom.baseUrl, model: custom.model, contextLength: custom.contextLength ?? 0,
-        keyHint: maskKey(key), hasKey: !!key, hermesConfig,
+        activeProfileId: this.profiles.activeId(),
+        profiles: await this.profiles.views(this.tr("api.mode.hermes")),
+        hermesConfig,
       },
+      mcpServers: this.mcpSettings().map(toMcpView),
     });
   }
 
-  private async launchEnv(mode: EndpointMode): Promise<NodeJS.ProcessEnv> {
-    if (mode !== "custom") return buildLaunchEnv({ parentEnv: process.env, mode });
-    const custom = this.customEndpointSettings(await this.context.secrets.get(SECRET_KEY));
+  private async launchEnv(): Promise<{ env: NodeJS.ProcessEnv; approval: TerminalApprovalState }> {
+    const profile = this.profiles.active();
+    if (!profile) {
+      const approval = await this.approval.hermesConfigState();
+      return { env: { ...buildLaunchEnv({ parentEnv: process.env, mode: "hermes" }), ...this.approval.env(approval) }, approval };
+    }
+    // All custom profiles share one IDE-owned Hermes home, so their sessions stay listed together.
+    const custom = toEndpoint(profile, await this.profiles.key(profile.id));
     const profileHome = path.join(this.context.globalStorageUri.fsPath, "hermes-home");
     await mkdir(profileHome, { recursive: true });
     const configPath = path.join(profileHome, "config.yaml");
-    const yaml = buildProfileConfigYaml(custom);
+    const { yaml, state } = await this.approval.prepareProfile(profileHome, buildProfileConfigYaml(custom));
     if ((await readFile(configPath, "utf8").catch(() => "")) !== yaml) await writeFile(configPath, yaml, "utf8");
-    return buildLaunchEnv({ parentEnv: process.env, mode, custom, profileHome });
+    const env = buildLaunchEnv({ parentEnv: process.env, mode: "custom", custom, profileHome });
+    return { env: { ...env, ...this.approval.env(state) }, approval: state };
   }
 
-  private async saveEndpoint(msg: Extract<ViewToHost, { type: "saveEndpoint" }>): Promise<void> {
-    if (msg.mode === "custom") {
-      const invalid = validateCustomEndpoint({ baseUrl: msg.baseUrl, model: msg.model });
-      if (invalid) {
-        this.setState({ test: { running: false, ok: false, message: this.tr(`test.fail.${invalid}` as StringKey) } });
-        return;
-      }
+  async selectProfile(id: string): Promise<void> {
+    if (id === this.profiles.activeId()) return;
+    await this.profiles.select(id);
+    this.log.info(`profile switched to ${id}`);
+    await this.restartFresh();
+  }
+
+  private async saveProfile(msg: Extract<ViewToHost, { type: "saveProfile" }>): Promise<void> {
+    const invalid = validateCustomEndpoint({ baseUrl: msg.profile.baseUrl, model: msg.profile.model });
+    if (invalid) {
+      this.setState({ test: { running: false, ok: false, message: this.tr(`test.fail.${invalid}` as StringKey) } });
+      return;
     }
-    const cfg = vscode.workspace.getConfiguration("hermes");
-    const target = vscode.ConfigurationTarget.Global;
-    await cfg.update("endpoint.mode", msg.mode, target);
-    await cfg.update("endpoint.baseUrl", msg.baseUrl.trim(), target);
-    await cfg.update("endpoint.model", msg.model.trim(), target);
-    await cfg.update("endpoint.contextLength", Math.max(0, Math.floor(msg.contextLength || 0)), target);
-    if (msg.apiKey !== undefined) {
-      if (msg.apiKey === "") await this.context.secrets.delete(SECRET_KEY);
-      else await this.context.secrets.store(SECRET_KEY, msg.apiKey.trim());
-    }
-    this.log.info(`endpoint saved (mode ${msg.mode}, base ${msg.baseUrl || "-"}, model ${msg.model || "-"})`);
-    // A different endpoint means a different Hermes home or provider: start clean.
-    await this.shutdown();
-    this.resetTranscript();
-    this.setState({ sessionId: undefined, models: [], currentModelId: undefined, usage: undefined });
-    await this.refresh();
+    const id = await this.profiles.save(msg.profile, msg.apiKey);
+    await this.profiles.select(id);
+    this.log.info(`profile ${id} saved (base ${msg.profile.baseUrl}, model ${msg.profile.model})`);
+    // Saving activates the profile; endpoint, key or model may have changed, so start clean.
+    await this.restartFresh();
+  }
+
+  private async deleteProfile(id: string): Promise<void> {
+    const wasActive = id === this.profiles.activeId();
+    await this.profiles.delete(id);
+    if (wasActive) await this.restartFresh();
+    else await this.loadSettingsView();
   }
 
   private async testEndpoint(msg: Extract<ViewToHost, { type: "testEndpoint" }>): Promise<void> {
     this.setState({ test: { running: true } });
     if (!msg.baseUrl.trim()) {
-      // Mode "hermes": check that Hermes itself can open a session with its own config.
+      // Profile "hermes": check that Hermes itself can open a session with its own config.
       const ok = await this.ensureStarted();
       if (!ok || !this.client) {
         this.setState({ test: { running: false, ok: false, message: this.state.phaseDetail ?? this.tr("status.crashed") } });
@@ -693,7 +931,8 @@ export class HermesService implements vscode.Disposable {
       }
       const t0 = Date.now();
       try {
-        await this.client.newSession(this.cwd!);
+        const probe = await this.client.newSession(this.cwd!);
+        await this.hideSession(probe.sessionId);
         const label = shortModelName(this.state.currentModelId, this.availableModels) || this.tr("composer.noModel");
         this.setState({ test: { running: false, ok: true, message: this.tr("test.hermesOk", label, Date.now() - t0) } });
       } catch (error) {
@@ -702,7 +941,8 @@ export class HermesService implements vscode.Disposable {
       return;
     }
 
-    const apiKey = msg.apiKey !== undefined && msg.apiKey !== "" ? msg.apiKey : await this.context.secrets.get(SECRET_KEY);
+    const stored = msg.profileId ? await this.profiles.key(msg.profileId) : undefined;
+    const apiKey = msg.apiKey !== undefined && msg.apiKey !== "" ? msg.apiKey : stored;
     const ep: CustomEndpoint = { baseUrl: msg.baseUrl, model: msg.model, apiKey, contextLength: msg.contextLength };
     const invalid = validateCustomEndpoint(ep);
     if (invalid) {
@@ -724,11 +964,70 @@ export class HermesService implements vscode.Disposable {
     }
   }
 
+  // ---- MCP servers (F-15) -------------------------------------------------------------------
+
+  private mcpSettings(): McpServerSetting[] {
+    return sanitizeMcpServers(vscode.workspace.getConfiguration("hermes").get("mcpServers"));
+  }
+
+  private mcpForAcp(): acp.McpServer[] {
+    return toAcpMcpServers(this.mcpSettings());
+  }
+
+  private async saveMcpServers(views: McpServerView[]): Promise<void> {
+    const existing = new Map(this.mcpSettings().map((s) => [s.name, s]));
+    // env/headers may hold tokens and never travel to the webview; keep them from settings by name.
+    const next: McpServerSetting[] = views.map((v) => ({
+      name: v.name.trim(),
+      type: v.type,
+      command: v.type === "stdio" ? v.command?.trim() : undefined,
+      args: v.type === "stdio" ? v.args : undefined,
+      url: v.type === "stdio" ? undefined : v.url?.trim(),
+      env: existing.get(v.name)?.env,
+      headers: existing.get(v.name)?.headers,
+      enabled: v.enabled,
+    }));
+    for (const s of next) {
+      const problem = validateMcpServer(s, next);
+      if (problem) {
+        this.setState({ mcpError: `${s.name || "?"}: ${this.tr(problem as StringKey)}` });
+        return;
+      }
+    }
+    const compact = next.map((s) => Object.fromEntries(Object.entries(s).filter(([, v]) => v !== undefined)));
+    await vscode.workspace.getConfiguration("hermes").update("mcpServers", compact, vscode.ConfigurationTarget.Global);
+    this.setState({ mcpError: undefined, mcpServers: next.map(toMcpView) });
+    this.log.info(`MCP servers saved: ${next.map((s) => `${s.name}${s.enabled === false ? " (off)" : ""}`).join(", ") || "-"}`);
+    // MCP servers are attached when a session is created or loaded: resume the session with them.
+    if (this.client) await this.restart();
+  }
+
   dispose(): void {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     void this.shutdown();
     for (const d of this.disposables) d.dispose();
   }
+}
+
+/** Reads an @file for embedding (at most MAX_FILE_BYTES; the prompt is assembled synchronously). */
+function readContextFile(file: string): FileContent {
+  try {
+    const size = statSync(file).size;
+    const buffer = Buffer.alloc(Math.min(size, MAX_FILE_BYTES + 1));
+    const fd = openSync(file, "r");
+    try {
+      readSync(fd, buffer, 0, buffer.length, 0);
+    } finally {
+      closeSync(fd);
+    }
+    return decodeFile(file, buffer, size);
+  } catch (error) {
+    return { kind: "error", message: (error as Error).message };
+  }
+}
+
+function toMcpView(s: McpServerSetting): McpServerView {
+  return { name: s.name, type: s.type, command: s.command, args: s.args, url: s.url, enabled: s.enabled !== false };
 }
 
 function isInside(root: string, target: string): boolean {
@@ -741,4 +1040,3 @@ function samePath(a: string, b: string): boolean {
   const norm = (p: string) => path.resolve(p);
   return process.platform === "win32" ? norm(a).toLowerCase() === norm(b).toLowerCase() : norm(a) === norm(b);
 }
-

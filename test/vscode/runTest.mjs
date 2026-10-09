@@ -23,7 +23,12 @@ await esbuild.build({
   logLevel: "warning",
 });
 
-const mock = await startOpenAIMock({ models: [{ id: "mock-model", context_length: 128000 }] });
+const mock = await startOpenAIMock({
+  models: [
+    { id: "mock-model", context_length: 128000 },
+    { id: "mock-model-2", context_length: 128000 },
+  ],
+});
 const tmp = mkdtempSync(path.join(os.tmpdir(), "hermes-ide-vscode-"));
 const ws = path.join(tmp, "workspace");
 mkdirSync(path.join(ws, ".vscode"), { recursive: true });
@@ -61,12 +66,24 @@ try {
       "--user-data-dir", path.join(tmp, "user-data"),
       "--extensions-dir", path.join(tmp, "extensions"),
     ],
-    extensionTestsEnv: { HERMES_IT_MOCK_URL: mock.baseUrl },
+    extensionTestsEnv: {
+      HERMES_IT_MOCK_URL: mock.baseUrl,
+      // The extension host's execPath is Code.exe, so hand it a real Node for the MCP test server.
+      HERMES_IT_NODE: process.execPath,
+      HERMES_IT_ECHO: path.join(root, "test/fixtures/mcp-echo.mjs"),
+    },
   });
 } catch (error) {
   console.error(`VS Code tests failed: ${error?.message ?? error}`);
   code = 1;
 } finally {
+  const summary = mock.chatRequests().map((r, i) => {
+    const b = r.body ?? {};
+    const sys = (b.messages ?? []).find((m) => m.role === "system")?.content ?? "";
+    const lastUser = [...(b.messages ?? [])].reverse().find((m) => m.role === "user")?.content ?? "";
+    return `#${i} tools=${(b.tools ?? []).length} msgs=${(b.messages ?? []).length} sys=${JSON.stringify(String(sys).slice(0, 60))} user=${JSON.stringify(String(typeof lastUser === "string" ? lastUser : JSON.stringify(lastUser)).slice(0, 80))}`;
+  });
+  writeFileSync(path.join(os.tmpdir(), "hermes-ide-mock-requests.txt"), summary.join(String.fromCharCode(10)));
   await mock.close();
   rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
 }

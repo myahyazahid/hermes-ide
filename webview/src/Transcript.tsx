@@ -74,7 +74,20 @@ function groupTools(items: TranscriptItem[]): Block[] {
 function ItemView({ item, locale, cwd }: { item: TranscriptItem; locale: Locale; cwd?: string }) {
   switch (item.kind) {
     case "user":
-      return <div className="msg user">{item.text}</div>;
+      return (
+        <div className="user-turn">
+          {item.context && item.context.length > 0 && (
+            <div className="chips sent">
+              {item.context.map((c) => (
+                <button key={c.label} type="button" className="chip" title={c.path} onClick={() => send({ type: "openFile", path: c.path })}>
+                  <span className="mono">@{c.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="msg user">{item.text}</div>
+        </div>
+      );
     case "agent":
       return <AgentMessage text={item.text} streaming={item.streaming} />;
     case "thought":
