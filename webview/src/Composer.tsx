@@ -17,6 +17,7 @@ interface Props {
 let nextRequestId = 1;
 
 export function chipLabel(ref: ContextRef, cwd?: string): string {
+  if (ref.kind === "codebase") return "codebase";
   const name = ref.path.split(/[\\/]/).pop() ?? ref.path;
   if (ref.kind === "selection") return `${name} · ${ref.startLine}${ref.endLine && ref.endLine !== ref.startLine ? `-${ref.endLine}` : ""}`;
   const rel = relativePath(ref.path, cwd);
@@ -82,8 +83,9 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention }: 
           {results.map((item, i) => (
             <li key={item.kind + item.path} role="option" aria-selected={i === active}>
               <button type="button" className={i === active ? "on" : ""} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(item)}>
-                <span className="mention-icon" aria-hidden>{item.kind === "folder" ? "▸" : "·"}</span>
+                <span className="mention-icon" aria-hidden>{item.kind === "folder" ? "▸" : item.kind === "codebase" ? "✦" : "·"}</span>
                 <span className="mono">{item.label}</span>
+                {item.kind === "codebase" && <span className="muted mention-note">{t(locale, "index.mention")}</span>}
               </button>
             </li>
           ))}
@@ -95,7 +97,7 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention }: 
             const label = chipLabel(c, state.cwd);
             return (
               <span key={`${c.kind}:${c.path}:${c.startLine ?? ""}`} className={`chip ${c.kind}`} title={c.path}>
-                <span className="mono">{c.kind === "folder" ? "▸ " : ""}{label}</span>
+                <span className="mono">{c.kind === "folder" ? "▸ " : c.kind === "codebase" ? "✦ " : ""}{label}</span>
                 <button type="button" aria-label={t(locale, "composer.removeChip", label)} onClick={() => setChips((prev) => prev.filter((_, j) => j !== i))}>
                   ×
                 </button>

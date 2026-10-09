@@ -2,7 +2,7 @@
   "name": "hermes-ide",
   "displayName": "Hermes IDE",
   "description": "%ext.description%",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "yahya",
   "private": true,
   "license": "UNLICENSED",
@@ -151,6 +151,22 @@
         "command": "hermes.removeApprovalHook",
         "title": "%cmd.removeApprovalHook%",
         "category": "Hermes"
+      },
+      {
+        "command": "hermes.completion.toggle",
+        "title": "%cmd.completionToggle%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.index.rebuild",
+        "title": "%cmd.indexRebuild%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.index.search",
+        "title": "%cmd.indexSearch%",
+        "category": "Hermes",
+        "icon": "$(search)"
       }
     ],
     "menus": {
@@ -391,6 +407,70 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "%cfg.useCtrlK%"
+        },
+        "hermes.completion.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "%cfg.completionEnabled%"
+        },
+        "hermes.completion.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%cfg.completionBaseUrl%"
+        },
+        "hermes.completion.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%cfg.completionModel%"
+        },
+        "hermes.completion.template": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "suffix",
+            "qwen",
+            "starcoder",
+            "codellama",
+            "deepseek"
+          ],
+          "default": "auto",
+          "markdownDescription": "%cfg.completionTemplate%"
+        },
+        "hermes.completion.maxTokens": {
+          "type": "number",
+          "default": 96,
+          "minimum": 8,
+          "maximum": 512,
+          "markdownDescription": "%cfg.completionMaxTokens%"
+        },
+        "hermes.completion.debounceMs": {
+          "type": "number",
+          "default": 120,
+          "minimum": 0,
+          "maximum": 2000,
+          "markdownDescription": "%cfg.completionDebounce%"
+        },
+        "hermes.index.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "%cfg.indexEnabled%"
+        },
+        "hermes.index.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%cfg.indexBaseUrl%"
+        },
+        "hermes.index.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%cfg.indexModel%"
+        },
+        "hermes.index.maxFileKB": {
+          "type": "number",
+          "default": 256,
+          "minimum": 8,
+          "maximum": 4096,
+          "markdownDescription": "%cfg.indexMaxFileKB%"
         }
       }
     }

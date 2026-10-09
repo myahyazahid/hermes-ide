@@ -15,6 +15,8 @@ export async function startOpenAIMock({ port = 0, apiKey, models = [{ id: "mock-
   /** @type {{ method: string, path: string, auth?: string, body?: any }[]} */
   const requests = [];
   let defaultReply = { text: "OK" };
+  /** FIM replies for /completions: { text, delayMs? }; default echoes a marker. */
+  const fimQueue = [];
   const auxReply = "Mock title";
   let callSeq = 0;
 
@@ -33,14 +35,32 @@ export async function startOpenAIMock({ port = 0, apiKey, models = [{ id: "mock-
       queue.push(...(Array.isArray(body) ? body : [body]));
       return json(res, 200, { queued: queue.length });
     }
+    if (path === "/__fim" && req.method === "POST") {
+      fimQueue.push(...(Array.isArray(body) ? body : [body]));
+      return json(res, 200, { queued: fimQueue.length });
+    }
     if (path === "/__requests" && req.method === "GET") {
-      return json(res, 200, requests.filter((r) => r.path.endsWith("/chat/completions")).map((r) => r.body));
+      const wanted = new URL(req.url ?? "", "http://x").searchParams.get("path") ?? "/v1/chat/completions";
+      return json(res, 200, requests.filter((r) => r.path === wanted).map((r) => r.body));
     }
     if (apiKey && req.headers.authorization !== `Bearer ${apiKey}`) {
       return json(res, 401, { error: { message: "Invalid API key", type: "invalid_request_error", code: "invalid_api_key" } });
     }
     if (req.method === "GET" && path === "/v1/models") {
       return json(res, 200, { object: "list", data: models.map((m) => ({ object: "model", owned_by: "mock", ...m })) });
+    }
+    if (req.method === "POST" && path === "/v1/completions") {
+      const reply = fimQueue.length ? fimQueue.shift() : { text: "completion()" };
+      if (reply.delayMs) await new Promise((r) => setTimeout(r, reply.delayMs));
+      if (res.destroyed) return;
+      return json(res, 200, {
+        id: `cmpl-mock-${++callSeq}`, object: "text_completion", model: body?.model,
+        choices: [{ index: 0, text: reply.text, finish_reason: "stop" }],
+      });
+    }
+    if (req.method === "POST" && path === "/v1/embeddings") {
+      const inputs = Array.isArray(body?.input) ? body.input : [body?.input ?? ""];
+      return json(res, 200, { object: "list", model: body?.model, data: inputs.map((t, index) => ({ object: "embedding", index, embedding: bagOfWords(String(t)) })) });
     }
     if (req.method === "POST" && path === "/v1/chat/completions") {
       if (models.length && body?.model && !models.some((m) => m.id === body.model)) {
@@ -109,10 +129,23 @@ export async function startOpenAIMock({ port = 0, apiKey, models = [{ id: "mock-
     requests,
     /** Queue replies consumed in order by chat completion calls. */
     script(replies) { queue.push(...replies); },
+    scriptFim(replies) { fimQueue.push(...replies); },
+    fimRequests() { return requests.filter((r) => r.path === "/v1/completions"); },
     setDefault(reply) { defaultReply = reply; },
     chatRequests() { return requests.filter((r) => r.path.endsWith("/chat/completions")); },
     close() { return new Promise((resolve) => { server.closeAllConnections?.(); server.close(() => resolve()); }); },
   };
+}
+
+/** Deterministic "embedding": hashed bag of words, so texts sharing words are similar. */
+export function bagOfWords(text, dims = 128) {
+  const v = new Array(dims).fill(0);
+  for (const w of text.toLowerCase().split(/[^a-z0-9]+/).filter((x) => x.length > 2)) {
+    let h = 2166136261;
+    for (let i = 0; i < w.length; i++) h = Math.imul(h ^ w.charCodeAt(i), 16777619);
+    v[(h >>> 0) % dims] += 1;
+  }
+  return v;
 }
 
 function json(res, status, payload) {

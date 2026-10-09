@@ -16,7 +16,8 @@ export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
 
 /** F-12: something attached to a prompt with @file, @folder or a selection. */
 export interface ContextRef {
-  kind: "file" | "folder" | "selection";
+  /** "codebase" = semantic search over the index with the prompt text (F-18). */
+  kind: "file" | "folder" | "selection" | "codebase";
   /** Absolute path. */
   path: string;
   /** 1-based, selections only. */
@@ -111,6 +112,33 @@ export interface McpServerView {
   enabled: boolean;
 }
 
+/** F-17 Tab autocomplete settings and health. */
+export interface CompletionView {
+  enabled: boolean;
+  baseUrl: string;
+  model: string;
+  template: string;
+  keyHint: string;
+  hasKey: boolean;
+  avgLatencyMs?: number;
+  lastError?: string;
+}
+
+/** F-18 codebase index settings and progress. */
+export interface IndexView {
+  enabled: boolean;
+  baseUrl: string;
+  model: string;
+  keyHint: string;
+  hasKey: boolean;
+  status: "disabled" | "needsSetup" | "idle" | "indexing" | "ready" | "error";
+  files: number;
+  chunks: number;
+  done?: number;
+  total?: number;
+  error?: string;
+}
+
 export interface ViewState {
   phase: Phase;
   phaseDetail?: string;
@@ -126,13 +154,17 @@ export interface ViewState {
   terminalApproval: TerminalApprovalState;
   mcpServers: McpServerView[];
   mcpError?: string;
+  completion: CompletionView;
+  completionTest?: TestView;
+  index: IndexView;
+  indexTest?: TestView;
   hermesVersion?: string;
   versionWarning?: string;
   usage?: { used: number; size: number };
 }
 
 export interface MentionItem {
-  kind: "file" | "folder";
+  kind: "file" | "folder" | "codebase";
   path: string;
   /** Workspace-relative display path. */
   label: string;
@@ -173,6 +205,12 @@ export type ViewToHost =
   | { type: "enableTerminalApproval" }
   | { type: "dismissTerminalApproval" }
   | { type: "saveMcpServers"; servers: McpServerView[] }
+  /** undefined apiKey = keep the stored key; "" = remove it. */
+  | { type: "saveCompletion"; enabled: boolean; baseUrl: string; model: string; template: string; apiKey?: string }
+  | { type: "testCompletion"; baseUrl: string; model: string; template: string; apiKey?: string }
+  | { type: "saveIndex"; enabled: boolean; baseUrl: string; model: string; apiKey?: string }
+  | { type: "testIndex"; baseUrl: string; model: string; apiKey?: string }
+  | { type: "rebuildIndex" }
   | { type: "restart" }
   | { type: "recheck" }
   | { type: "openFile"; path: string }

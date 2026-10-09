@@ -1,6 +1,6 @@
 # Hermes IDE
 
-Ekstensi VS Code yang menjalankan [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) lewat ACP (Agent Client Protocol), dengan endpoint model yang bisa kamu atur sendiri. Rancangan lengkapnya ada di [docs/hermes-ide_prd.md](docs/hermes-ide_prd.md). Status saat ini: **Fase 2 (pengalaman ala Cursor)**.
+Ekstensi VS Code yang menjalankan [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) lewat ACP (Agent Client Protocol), dengan endpoint model yang bisa kamu atur sendiri. Rancangan lengkapnya ada di [docs/hermes-ide_prd.md](docs/hermes-ide_prd.md). Status saat ini: **Fase 3 (fitur di luar Hermes: Tab autocomplete dan index codebase)**.
 
 ## Syarat
 
@@ -12,8 +12,8 @@ Ekstensi VS Code yang menjalankan [Hermes Agent](https://hermes-agent.nousresear
 
 ```powershell
 npm install
-npm run package          # menghasilkan hermes-ide-0.2.0.vsix
-code --install-extension hermes-ide-0.2.0.vsix
+npm run package          # menghasilkan hermes-ide-0.3.0.vsix
+code --install-extension hermes-ide-0.3.0.vsix
 ```
 
 Buka folder proyek, lalu klik ikon ✦ **Hermes Agent** di activity bar. Hermes dijalankan saat panel dibuka dan dihentikan saat VS Code ditutup.
@@ -44,6 +44,27 @@ Kenapa profil kustom butuh `HERMES_HOME` sendiri: Hermes membaca provider dan ba
 - **Keandalan**: jika proses Hermes mati, panel menampilkan tombol *Mulai ulang Hermes*; percakapan dilanjutkan lewat `session/load` tanpa reload jendela.
 - **Log**: *Hermes: Tampilkan Agent Log* (stderr Hermes + log ekstensi), *Hermes: Ekspor Log* untuk debugging. API key disamarkan di log.
 
+## Fitur di luar Hermes (Fase 3)
+
+Dua fitur ini memanggil endpoint model sendiri, terpisah dari Hermes, dengan base URL, model, dan API key masing-masing (key di SecretStorage). Atur keduanya di kartu Custom API.
+
+### Tab autocomplete (F-17)
+
+- Saran inline dari model *fill-in-the-middle* lewat endpoint OpenAI-compatible `/completions` (Ollama, vLLM, llama.cpp, LM Studio, dll.). Tekan **Tab** untuk menerima.
+- Format FIM dipilih otomatis dari nama model: Qwen2.5-Coder, StarCoder, CodeLlama, DeepSeek-Coder. Model lain memakai parameter `suffix` yang diterapkan server.
+- Saran satu baris di tengah baris, multi-baris setelah `{`, `(`, `:` atau di baris kosong. Ada debounce (`hermes.completion.debounceMs`, default 120 ms), pembatalan saat terus mengetik, cache, dan lanjutan saran saat kamu mengetik huruf yang sama dengan saran.
+- Status bar menampilkan **Tab** beserta latensi rata-rata; klik untuk menyalakan/mematikan.
+- Overhead ekstensi sendiri sekitar 10 ms. Target "< 500 ms" bergantung pada model: pakai model kecil yang dekat (misal `qwen2.5-coder:1.5b` lokal).
+
+### Index codebase (F-18)
+
+- File workspace dipecah per 60 baris (tumpang tindih 12), di-embed lewat `/embeddings`, dan disimpan lokal di storage workspace VS Code (`index.bin` + `index.json`, tanpa dependensi native).
+- Pembaruan inkremental: hanya file yang ukuran/mtime-nya berubah yang di-embed ulang, sekitar 2 detik setelah file disimpan atau dibuat. Lockfile, file biner, hasil build, dan file di atas `hermes.index.maxFileKB` dilewati.
+- Dipakai lewat tiga cara:
+  - **`@codebase`** di composer: potongan kode paling relevan untuk pesanmu disematkan ke prompt.
+  - **Tool `codebase_search` untuk Hermes**: ekstensi menjalankan server MCP kecil di `127.0.0.1` (dengan token per sesi) dan meneruskannya ke Hermes, sehingga agent bisa mencari sendiri. Hermes memanggilnya lewat `tool_call`.
+  - Perintah *Hermes: Cari di Codebase (Semantik)* untuk mencari dan membuka hasil.
+
 ## Izin untuk setiap perintah terminal
 
 Hermes sendiri hanya meminta izin untuk perintah yang ia anggap berisiko. Agar *setiap* perintah ditanya (tujuan PRD #4), Hermes IDE memasang hook `pre_tool_call` Hermes untuk tool `terminal` dan `execute_code`. Hook itu menjawab `{"action": "approve"}`, yang membuat Hermes meminta izin lewat ACP seperti biasa, sehingga kartu izin di panel muncul untuk setiap perintah.
@@ -73,11 +94,11 @@ npm run test:integration   # hermes acp asli + server OpenAI tiruan lokal
 npm run test:vscode        # ekstensi di VS Code sungguhan (membuka jendela VS Code sementara)
 ```
 
-Tes integrasi dan tes VS Code tidak memakai endpoint atau API key sungguhan: model diganti server tiruan di `test/fixtures/openai-mock.mjs`, dan `test/fixtures/mcp-echo.mjs` adalah server MCP kecil untuk tes F-15.
+Tes integrasi dan tes VS Code tidak memakai endpoint atau API key sungguhan: model chat, FIM, dan embedding diganti server tiruan di `test/fixtures/openai-mock.mjs` (embedding tiruan berupa bag-of-words ter-hash), dan `test/fixtures/mcp-echo.mjs` adalah server MCP kecil untuk tes F-15.
 
 Struktur:
 
-- `src/core/`: logika tanpa dependensi VS Code (klien ACP, JSON-RPC, endpoint, profil, tes koneksi, hunk, kebijakan perintah, hook izin terminal, konteks, MCP, transkrip).
-- `src/vscode/`: integrasi VS Code (layanan Hermes, webview, diff review, sesi, edit inline, indeks file, profil, status bar, log).
+- `src/core/`: logika tanpa dependensi VS Code (klien ACP, JSON-RPC, endpoint, profil, tes koneksi, hunk, kebijakan perintah, hook izin terminal, konteks, MCP, FIM, embedding, chunker, vector store, server MCP HTTP, transkrip).
+- `src/vscode/`: integrasi VS Code (layanan Hermes, webview, diff review, sesi, edit inline, indeks file, profil, Tab autocomplete, index codebase, status bar, log).
 - `src/shared/`: kontrak pesan host↔webview dan string UI (ID/EN).
 - `webview/src/`: panel chat (React).

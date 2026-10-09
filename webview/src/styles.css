@@ -404,3 +404,12 @@ details.mcp summary { cursor: pointer; font-weight: 600; }
 .mcp-add { display: grid; grid-template-columns: 1fr auto; gap: 4px; margin-top: 6px; }
 .mcp-add .wide { grid-column: 1 / -1; }
 .mcp-add > button { grid-column: 1 / -1; justify-self: start; }
+
+/* ---- Phase 3: Tab autocomplete (F-17) and codebase index (F-18) ------------------- */
+details.feature { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+details.feature summary { cursor: pointer; font-weight: 600; }
+details.feature summary .muted { font-weight: 400; }
+.field select { width: 100%; }
+.progress { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin: 4px 0 8px; }
+.progress > div { height: 100%; background: var(--accent); transition: width 0.3s; }
+.mention-note { margin-left: auto; font-size: 0.85em; }

@@ -17,6 +17,8 @@ export interface OpenAIMock {
   baseUrl: string;
   requests: MockRequest[];
   script(replies: ScriptedReply[]): void;
+  scriptFim(replies: { text: string; delayMs?: number }[]): void;
+  fimRequests(): MockRequest[];
   setDefault(reply: ScriptedReply): void;
   chatRequests(): MockRequest[];
   close(): Promise<void>;
@@ -27,3 +29,5 @@ export function startOpenAIMock(opts?: {
   apiKey?: string;
   models?: Record<string, unknown>[];
 }): Promise<OpenAIMock>;
+
+export function bagOfWords(text: string, dims?: number): number[];

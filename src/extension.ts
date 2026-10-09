@@ -1,20 +1,27 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
+import { McpHttpServer } from "./core/mcpHttpServer";
 import { t } from "./shared/strings";
 import { AgentLog } from "./vscode/agentLog";
 import { ChatViewProvider } from "./vscode/chatView";
+import { CodebaseIndex } from "./vscode/codebaseIndex";
 import { DiffReviewManager } from "./vscode/diffReview";
 import { HermesService } from "./vscode/hermesService";
 import { runInlineEdit } from "./vscode/inlineEdit";
 import { SessionsView, type SessionSummary } from "./vscode/sessionsView";
 import { HermesStatusBar } from "./vscode/statusBar";
+import { TabCompletion } from "./vscode/tabCompletion";
 
 let service: HermesService | undefined;
+let ideMcp: McpHttpServer | undefined;
 
 /** Returned from activate() so the extension-host tests can drive the service directly. */
 export interface HermesIdeApi {
   service: HermesService;
   reviews: DiffReviewManager;
   sessions: SessionsView;
+  completion: TabCompletion;
+  index: CodebaseIndex;
 }
 
 export function activate(context: vscode.ExtensionContext): HermesIdeApi {
@@ -22,7 +29,14 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
   // The review manager is created first; its selection callback is wired once the service exists.
   let onSelection: (id: string, accepted: number, total: number) => void = () => {};
   const reviews = new DiffReviewManager(() => service?.locale ?? "en", (id, a, n) => onSelection(id, a, n));
-  service = new HermesService(context, log, reviews);
+  const root = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const completion = new TabCompletion(context.secrets);
+  const index = new CodebaseIndex(context, log, root);
+  ideMcp = new McpHttpServer(() => [index.mcpTool()], {
+    name: "hermes-ide",
+    version: String(context.extension.packageJSON.version ?? "0.0.0"),
+  }, (line) => log.info(line));
+  service = new HermesService(context, log, reviews, { completion, index, mcp: ideMcp });
   const svc = service;
   onSelection = (id, a, n) => svc.onReviewSelectionChanged(id, a, n);
 
@@ -37,6 +51,8 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
   context.subscriptions.push(
     log,
     reviews,
+    completion,
+    index,
     svc,
     statusBar,
     sessions,
@@ -100,6 +116,36 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
       if (answer === confirm) await svc.deleteSession(s.id);
     }),
 
+    // F-17 / F-18
+    vscode.commands.registerCommand("hermes.completion.toggle", async () => {
+      await vscode.workspace.getConfiguration("hermes.completion").update("enabled", !completion.enabled, vscode.ConfigurationTarget.Global);
+    }),
+    vscode.commands.registerCommand("hermes.index.rebuild", () => index.rebuild()),
+    vscode.commands.registerCommand("hermes.index.search", async () => {
+      const loc = svc.locale;
+      const query = await vscode.window.showInputBox({ prompt: t(loc, "index.searchPrompt"), ignoreFocusOut: true });
+      if (!query?.trim()) return;
+      const hits = await index.search(query.trim(), 20);
+      const cwd = root();
+      if (!hits.length || !cwd) {
+        void vscode.window.showInformationMessage(t(loc, "index.noResults"));
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        hits.map((h) => ({
+          label: `${h.path}:${h.startLine}-${h.endLine}`,
+          description: h.score.toFixed(2),
+          detail: h.text.split("\n").find((l) => l.trim())?.trim().slice(0, 120),
+          hit: h,
+        })),
+        { matchOnDetail: true, placeHolder: query },
+      );
+      if (!picked) return;
+      const doc = await vscode.workspace.openTextDocument(path.join(cwd, picked.hit.path));
+      const range = new vscode.Range(picked.hit.startLine - 1, 0, picked.hit.endLine - 1, 0);
+      await vscode.window.showTextDocument(doc, { selection: range });
+    }),
+
     // F-16: quick profile switch (also from the status bar model item).
     vscode.commands.registerCommand("hermes.switchProfile", async () => {
       const loc = svc.locale;
@@ -125,11 +171,14 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
   statusBar.update(svc.state);
   updateSessionsMessage();
   void svc.refresh();
-  return { service: svc, reviews, sessions };
+  void index.reconfigure();
+  return { service: svc, reviews, sessions, completion, index };
 }
 
 export async function deactivate(): Promise<void> {
   // F-01: stop `hermes acp` when VS Code closes.
   await service?.shutdown();
+  await ideMcp?.close();
   service = undefined;
+  ideMcp = undefined;
 }

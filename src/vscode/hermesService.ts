@@ -18,20 +18,25 @@ import {
 } from "../core/endpoint";
 import { isSupportedVersion, locateHermes, needsShell, readHermesVersion, SUPPORTED_HERMES } from "../core/hermesLocator";
 import { applyHunks, computeHunks, diffStat, sameText } from "../core/hunks";
+import { embed } from "../core/embeddings";
+import { requestFim, type FimTemplate } from "../core/fim";
 import { sanitizeMcpServers, toAcpMcpServers, validateMcpServer, type McpServerSetting } from "../core/mcp";
+import type { McpHttpServer } from "../core/mcpHttpServer";
 import { cancelled, parsePermission, pickOption, selected, type ParsedPermission } from "../core/permission";
 import { HERMES_PROFILE_ID, toEndpoint } from "../core/profiles";
 import { Transcript } from "../core/transcript";
 import type {
-  ContextRef, HostToView, McpServerView, ModelOption, PermissionAction, TerminalApprovalState, TranscriptItem, ViewState,
+  ContextRef, HostToView, McpServerView, MentionItem, ModelOption, PermissionAction, TerminalApprovalState, TranscriptItem, ViewState,
   ViewToHost,
 } from "../shared/protocol";
 import { resolveLocale, t, type Locale, type StringKey } from "../shared/strings";
 import type { AgentLog } from "./agentLog";
 import type { DiffReviewManager } from "./diffReview";
+import { INDEX_SECRET, type CodebaseIndex } from "./codebaseIndex";
 import { FileIndex } from "./fileIndex";
 import { ProfileStore } from "./profileStore";
 import type { SessionSummary } from "./sessionsView";
+import { COMPLETION_SECRET, type TabCompletion } from "./tabCompletion";
 import { TerminalApprovalSetup } from "./terminalApprovalSetup";
 
 const ALLOWLIST_KEY = "hermes.allowlist";
@@ -49,6 +54,14 @@ interface PendingPermission {
   respond(response: acp.RequestPermissionResponse): void;
   reviewId?: string;
   absPath?: string;
+}
+
+/** Phase 3 features that live outside Hermes. */
+export interface IdeFeatures {
+  completion: TabCompletion;
+  index: CodebaseIndex;
+  /** Serves IDE tools (codebase_search) to Hermes over MCP. */
+  mcp: McpHttpServer;
 }
 
 export interface InlineEditRequest {
@@ -90,6 +103,7 @@ export class HermesService implements vscode.Disposable {
     private readonly context: vscode.ExtensionContext,
     private readonly log: AgentLog,
     private readonly reviews: DiffReviewManager,
+    private readonly features: IdeFeatures,
   ) {
     this.profiles = new ProfileStore(context.secrets);
     this.approval = new TerminalApprovalSetup(context, log);
@@ -102,8 +116,12 @@ export class HermesService implements vscode.Disposable {
       test: { running: false },
       terminalApproval: "disabled",
       mcpServers: [],
+      completion: features.completion.view(),
+      index: features.index.view(),
     };
     this.disposables.push(
+      features.completion.onDidChange(() => this.setState({ completion: features.completion.view() })),
+      features.index.onDidChange(() => this.setState({ index: features.index.view() })),
       vscode.workspace.onDidGrantWorkspaceTrust(() => void this.refresh()),
       vscode.workspace.onDidChangeWorkspaceFolders(() => void this.restartForWorkspaceChange()),
       vscode.workspace.onDidChangeConfiguration((e) => {
@@ -170,7 +188,10 @@ export class HermesService implements vscode.Disposable {
       case "selectModel":
         return this.selectModel(msg.modelId);
       case "mentionQuery": {
-        const items = await this.files.search(msg.query).catch(() => []);
+        const items: MentionItem[] = await this.files.search(msg.query).catch(() => []);
+        if (this.features.index.enabled && "codebase".startsWith(msg.query.toLowerCase())) {
+          items.unshift({ kind: "codebase", path: "", label: "codebase" });
+        }
         this.post?.({ type: "mentionResults", requestId: msg.requestId, items });
         return;
       }
@@ -190,6 +211,16 @@ export class HermesService implements vscode.Disposable {
         return;
       case "saveMcpServers":
         return this.saveMcpServers(msg.servers);
+      case "saveCompletion":
+        return this.saveCompletion(msg);
+      case "testCompletion":
+        return this.testCompletion(msg);
+      case "saveIndex":
+        return this.saveIndex(msg);
+      case "testIndex":
+        return this.testIndex(msg);
+      case "rebuildIndex":
+        return this.features.index.rebuild();
       case "restart":
         return this.restart();
       case "recheck":
@@ -320,7 +351,7 @@ export class HermesService implements vscode.Disposable {
       if (resumeSessionId) {
         this.suppressUpdates = true; // the transcript is still in memory; skip Hermes' replay
         try {
-          const loaded = await client.loadSession(cwd, resumeSessionId, this.mcpForAcp());
+          const loaded = await client.loadSession(cwd, resumeSessionId, await this.mcpServersForSession());
           if (loaded) {
             sessionId = resumeSessionId;
             models = loaded.models;
@@ -332,7 +363,7 @@ export class HermesService implements vscode.Disposable {
         }
       }
       if (!sessionId) {
-        const created = await client.newSession(cwd, this.mcpForAcp());
+        const created = await client.newSession(cwd, await this.mcpServersForSession());
         sessionId = created.sessionId;
         models = created.models;
         if (resumeSessionId) this.resetTranscript();
@@ -421,7 +452,8 @@ export class HermesService implements vscode.Disposable {
     const notes = this.notesForNextPrompt.splice(0);
     const body = notes.length ? `${notes.join("\n")}\n\n${trimmed}` : trimmed;
     if (context.some((c) => c.kind === "folder")) await this.files.ensure();
-    const blocks = buildPromptBlocks(body, context, { cwd, folderListing: (f) => this.files.listFolder(f), readFile: readContextFile });
+    const expanded = await this.expandCodebase(trimmed, context);
+    const blocks = buildPromptBlocks(body, expanded, { cwd, folderListing: (f) => this.files.listFolder(f), readFile: readContextFile });
     this.setState({ busy: true });
     this.sessionsChanged.fire();
     const client = this.client;
@@ -439,6 +471,26 @@ export class HermesService implements vscode.Disposable {
     }
   }
 
+  /** @codebase: replaces the reference with the best-matching chunks for the prompt (F-18). */
+  private async expandCodebase(query: string, context: ContextRef[]): Promise<ContextRef[]> {
+    if (!context.some((c) => c.kind === "codebase")) return context;
+    const rest = context.filter((c) => c.kind !== "codebase");
+    if (!this.features.index.ready || !this.cwd) {
+      this.notice("warn", this.tr("index.notReady"));
+      return rest;
+    }
+    try {
+      const hits = await this.features.index.search(query, 8);
+      const cwd = this.cwd;
+      return [...rest, ...hits.map((h): ContextRef => ({
+        kind: "selection", path: path.join(cwd, h.path), startLine: h.startLine, endLine: h.endLine, text: h.text,
+      }))];
+    } catch (error) {
+      this.notice("warn", this.tr("index.searchFailed", (error as Error).message));
+      return rest;
+    }
+  }
+
   /** F-10: cancels the running turn; ACP requires pending permission requests to be cancelled too. */
   async stop(): Promise<void> {
     if (!this.client || !this.state.sessionId || !this.state.busy) return;
@@ -450,7 +502,7 @@ export class HermesService implements vscode.Disposable {
     if (this.state.busy) await this.stop();
     if (!(await this.ensureStarted()) || !this.client) return;
     try {
-      const created = await this.client.newSession(this.cwd!, this.mcpForAcp());
+      const created = await this.client.newSession(this.cwd!, await this.mcpServersForSession());
       await this.context.workspaceState.update(LAST_SESSION_KEY, created.sessionId);
       await this.pinAskMode(this.client, created.sessionId);
       this.notesForNextPrompt.length = 0;
@@ -562,7 +614,7 @@ export class HermesService implements vscode.Disposable {
     // Set before loading so the replayed updates pass the session filter.
     this.setState({ sessionId, sessionTitle: undefined, usage: undefined });
     try {
-      const loaded = await this.client.loadSession(this.cwd, sessionId, this.mcpForAcp());
+      const loaded = await this.client.loadSession(this.cwd, sessionId, await this.mcpServersForSession());
       if (!loaded) throw new Error("session not found");
       await this.pinAskMode(this.client, sessionId);
       this.applyModels(loaded.models);
@@ -611,7 +663,7 @@ export class HermesService implements vscode.Disposable {
   async inlineEdit(req: InlineEditRequest, token: vscode.CancellationToken): Promise<string> {
     if (!(await this.ensureStarted()) || !this.client || !this.cwd) throw new Error(this.tr("inline.notReady"));
     const client = this.client;
-    const created = await client.newSession(this.cwd, this.mcpForAcp());
+    const created = await client.newSession(this.cwd, await this.mcpServersForSession());
     const sessionId = created.sessionId;
     await this.hideSession(sessionId);
     this.inlineReplies.set(sessionId, "");
@@ -863,7 +915,7 @@ export class HermesService implements vscode.Disposable {
   // ---- endpoint profiles (F-04, F-05, F-16) -------------------------------------------------
 
   private async loadSettingsView(): Promise<void> {
-    this.log.setSecrets(await this.profiles.allKeys());
+    this.log.setSecrets(await this.allSecrets());
     const configPath = path.join(defaultHermesHome(), "config.yaml");
     const hermesConfig = { ...readHermesModelConfig(await readFile(configPath, "utf8").catch(() => "")), path: configPath };
     this.setState({
@@ -970,8 +1022,17 @@ export class HermesService implements vscode.Disposable {
     return sanitizeMcpServers(vscode.workspace.getConfiguration("hermes").get("mcpServers"));
   }
 
-  private mcpForAcp(): acp.McpServer[] {
-    return toAcpMcpServers(this.mcpSettings());
+  /** User MCP servers plus the IDE's own (codebase_search) when the index is enabled. */
+  private async mcpServersForSession(): Promise<acp.McpServer[]> {
+    const servers = toAcpMcpServers(this.mcpSettings());
+    if (!this.features.index.enabled) return servers;
+    try {
+      const url = await this.features.mcp.start();
+      servers.push({ type: "http", name: "hermes-ide", url, headers: [{ name: "Authorization", value: `Bearer ${this.features.mcp.token}` }] });
+    } catch (error) {
+      this.log.info(`IDE MCP server failed to start: ${(error as Error).message}`);
+    }
+    return servers;
   }
 
   private async saveMcpServers(views: McpServerView[]): Promise<void> {
@@ -1000,6 +1061,74 @@ export class HermesService implements vscode.Disposable {
     this.log.info(`MCP servers saved: ${next.map((s) => `${s.name}${s.enabled === false ? " (off)" : ""}`).join(", ") || "-"}`);
     // MCP servers are attached when a session is created or loaded: resume the session with them.
     if (this.client) await this.restart();
+  }
+
+  // ---- Tab autocomplete (F-17) and codebase index (F-18) ------------------------------------
+
+  private async saveCompletion(msg: Extract<ViewToHost, { type: "saveCompletion" }>): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("hermes.completion");
+    const target = vscode.ConfigurationTarget.Global;
+    await cfg.update("enabled", msg.enabled, target);
+    await cfg.update("baseUrl", msg.baseUrl.trim(), target);
+    await cfg.update("model", msg.model.trim(), target);
+    await cfg.update("template", msg.template, target);
+    if (msg.apiKey !== undefined) {
+      if (msg.apiKey === "") await this.context.secrets.delete(COMPLETION_SECRET);
+      else await this.context.secrets.store(COMPLETION_SECRET, msg.apiKey.trim());
+    }
+    await this.features.completion.reloadKey();
+    this.log.setSecrets(await this.allSecrets());
+    this.setState({ completion: this.features.completion.view() });
+  }
+
+  private async testCompletion(msg: Extract<ViewToHost, { type: "testCompletion" }>): Promise<void> {
+    this.setState({ completionTest: { running: true } });
+    const apiKey = msg.apiKey || (await this.context.secrets.get(COMPLETION_SECRET));
+    try {
+      const result = await requestFim(
+        { baseUrl: msg.baseUrl, model: msg.model, apiKey, template: msg.template as FimTemplate, maxTokens: 32 },
+        "function add(a: number, b: number): number {\n  return ",
+        "\n}\n",
+        { multiline: false, timeoutMs: 15_000 },
+      );
+      this.setState({ completionTest: { running: false, ok: true, message: this.tr("completion.testOk", result.latencyMs), detail: result.text || this.tr("completion.empty") } });
+    } catch (error) {
+      this.setState({ completionTest: { running: false, ok: false, message: this.tr("completion.testFailed"), detail: (error as Error).message } });
+    }
+  }
+
+  private async saveIndex(msg: Extract<ViewToHost, { type: "saveIndex" }>): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("hermes.index");
+    const target = vscode.ConfigurationTarget.Global;
+    const wasEnabled = this.features.index.enabled;
+    await cfg.update("enabled", msg.enabled, target);
+    await cfg.update("baseUrl", msg.baseUrl.trim(), target);
+    await cfg.update("model", msg.model.trim(), target);
+    if (msg.apiKey !== undefined) {
+      if (msg.apiKey === "") await this.context.secrets.delete(INDEX_SECRET);
+      else await this.context.secrets.store(INDEX_SECRET, msg.apiKey.trim());
+    }
+    this.log.setSecrets(await this.allSecrets());
+    await this.features.index.reconfigure();
+    // The IDE MCP server (codebase_search) is attached per session: resume with or without it.
+    if (wasEnabled !== msg.enabled && this.client) await this.restart();
+  }
+
+  private async testIndex(msg: Extract<ViewToHost, { type: "testIndex" }>): Promise<void> {
+    this.setState({ indexTest: { running: true } });
+    const apiKey = msg.apiKey || (await this.context.secrets.get(INDEX_SECRET));
+    const t0 = Date.now();
+    try {
+      const [v] = await embed({ baseUrl: msg.baseUrl, model: msg.model, apiKey }, ["function login(user, password)"], { timeoutMs: 20_000 });
+      this.setState({ indexTest: { running: false, ok: true, message: this.tr("index.testOk", Date.now() - t0, v.length) } });
+    } catch (error) {
+      this.setState({ indexTest: { running: false, ok: false, message: this.tr("index.testFailed"), detail: (error as Error).message } });
+    }
+  }
+
+  private async allSecrets(): Promise<string[]> {
+    const extra = await Promise.all([this.context.secrets.get(COMPLETION_SECRET), this.context.secrets.get(INDEX_SECRET)]);
+    return [...(await this.profiles.allKeys()), ...extra.filter((k): k is string => !!k)];
   }
 
   dispose(): void {

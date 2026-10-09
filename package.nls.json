@@ -29,5 +29,18 @@
   "cfg.mcpServers": "MCP servers passed to Hermes for IDE sessions (stdio: `command` + `args`; http/sse: `url`).",
   "cfg.askEveryCommand": "Ask before every terminal command the agent runs, not only the ones Hermes considers risky. Uses a Hermes `pre_tool_call` hook that only acts when Hermes is started by the IDE.",
   "cfg.nodePath": "Node.js used to run the terminal approval hook. Empty = Node on `PATH`, then the Node bundled with Hermes.",
-  "cfg.useCtrlK": "Bind Ctrl+K (when text is selected) to Hermes inline edit. Turn off to keep VS Code's Ctrl+K chords with a selection."
+  "cfg.useCtrlK": "Bind Ctrl+K (when text is selected) to Hermes inline edit. Turn off to keep VS Code's Ctrl+K chords with a selection.",
+  "cmd.completionToggle": "Toggle Tab Autocomplete",
+  "cmd.indexRebuild": "Rebuild Codebase Index",
+  "cmd.indexSearch": "Search Codebase (Semantic)",
+  "cfg.completionEnabled": "Inline Tab suggestions from a separate FIM model (outside Hermes).",
+  "cfg.completionBaseUrl": "OpenAI-compatible base URL of the FIM model, e.g. `http://localhost:11434/v1` (Ollama) or a vLLM server. The API key is kept in SecretStorage.",
+  "cfg.completionModel": "FIM model name, e.g. `qwen2.5-coder:1.5b`.",
+  "cfg.completionTemplate": "How the fill-in-the-middle prompt is built. `auto` picks from the model name; `suffix` lets the server do it from `prompt` + `suffix`.",
+  "cfg.completionMaxTokens": "Maximum tokens per multi-line suggestion (single-line suggestions use at most 48).",
+  "cfg.completionDebounce": "Wait this long after typing before asking the model.",
+  "cfg.indexEnabled": "Embed workspace files for semantic search (@codebase and the codebase_search tool for Hermes).",
+  "cfg.indexBaseUrl": "OpenAI-compatible base URL for `/embeddings`. The API key is kept in SecretStorage.",
+  "cfg.indexModel": "Embedding model name, e.g. `nomic-embed-text` or `text-embedding-3-small`.",
+  "cfg.indexMaxFileKB": "Skip files larger than this when indexing."
 }

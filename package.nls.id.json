@@ -29,5 +29,18 @@
   "cfg.mcpServers": "Server MCP yang diteruskan ke Hermes untuk sesi IDE (stdio: `command` + `args`; http/sse: `url`).",
   "cfg.askEveryCommand": "Minta izin sebelum setiap perintah terminal dari agent, bukan hanya yang dianggap berisiko oleh Hermes. Memakai hook `pre_tool_call` Hermes yang hanya aktif saat Hermes dijalankan dari IDE.",
   "cfg.nodePath": "Node.js untuk menjalankan hook izin terminal. Kosong = Node di `PATH`, lalu Node bawaan Hermes.",
-  "cfg.useCtrlK": "Pasang Ctrl+K (saat ada teks terseleksi) untuk edit inline Hermes. Matikan agar chord Ctrl+K bawaan VS Code tetap jalan saat ada seleksi."
+  "cfg.useCtrlK": "Pasang Ctrl+K (saat ada teks terseleksi) untuk edit inline Hermes. Matikan agar chord Ctrl+K bawaan VS Code tetap jalan saat ada seleksi.",
+  "cmd.completionToggle": "Nyalakan/Matikan Tab Autocomplete",
+  "cmd.indexRebuild": "Bangun Ulang Index Codebase",
+  "cmd.indexSearch": "Cari di Codebase (Semantik)",
+  "cfg.completionEnabled": "Saran Tab inline dari model FIM terpisah (di luar Hermes).",
+  "cfg.completionBaseUrl": "Base URL OpenAI-compatible model FIM, misalnya `http://localhost:11434/v1` (Ollama) atau server vLLM. API key disimpan di SecretStorage.",
+  "cfg.completionModel": "Nama model FIM, misalnya `qwen2.5-coder:1.5b`.",
+  "cfg.completionTemplate": "Cara prompt fill-in-the-middle dibuat. `auto` memilih dari nama model; `suffix` membiarkan server membuatnya dari `prompt` + `suffix`.",
+  "cfg.completionMaxTokens": "Token maksimum per saran multi-baris (saran satu baris maksimal 48).",
+  "cfg.completionDebounce": "Tunggu selama ini setelah mengetik sebelum bertanya ke model.",
+  "cfg.indexEnabled": "Embedding file workspace untuk pencarian semantik (@codebase dan tool codebase_search untuk Hermes).",
+  "cfg.indexBaseUrl": "Base URL OpenAI-compatible untuk `/embeddings`. API key disimpan di SecretStorage.",
+  "cfg.indexModel": "Nama model embedding, misalnya `nomic-embed-text` atau `text-embedding-3-small`.",
+  "cfg.indexMaxFileKB": "Lewati file yang lebih besar dari ini saat mengindeks."
 }

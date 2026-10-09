@@ -14,6 +14,14 @@ async function script(replies: unknown[]): Promise<void> {
   await fetch(`${CONTROL}/__script`, { method: "POST", body: JSON.stringify(replies) });
 }
 
+async function fim(replies: { text: string; delayMs?: number }[]): Promise<void> {
+  await fetch(`${CONTROL}/__fim`, { method: "POST", body: JSON.stringify(replies) });
+}
+
+async function requestsTo(apiPath: string): Promise<any[]> {
+  return (await (await fetch(`${CONTROL}/__requests?path=${encodeURIComponent(apiPath)}`)).json()) as any[];
+}
+
 async function agentRequests(): Promise<any[]> {
   const all = (await (await fetch(`${CONTROL}/__requests`)).json()) as any[];
   return all.filter((b) => Array.isArray(b?.tools) && b.tools.length);
@@ -307,6 +315,84 @@ export async function run(): Promise<void> {
       equal(svc.state.endpoint.activeProfileId, "second", "active profile");
       await svc.selectProfile("custom-api");
       await waitFor(() => svc.state.phase === "ready" && svc.state.currentModelId?.endsWith("mock-model"), "back to the first profile", 90_000);
+    }],
+
+    // ---- Phase 3 ------------------------------------------------------------------------
+
+    ["F-17: Tab suggestions come from the FIM endpoint in under 500 ms and can be accepted", async () => {
+      await svc.handleViewMessage({ type: "saveCompletion", enabled: true, baseUrl: MOCK, model: "qwen2.5-coder:1.5b", template: "auto" });
+      await waitFor(() => api.completion.enabled && !!api.completion.endpoint(), "completion configured");
+      const file = path.join(ws, "src", "fim.ts");
+      writeFileSync(file, "export function add(a: number, b: number) {\n  return \n}\n");
+      const doc = await vscode.workspace.openTextDocument(file);
+      const editor = await vscode.window.showTextDocument(doc);
+      const pos = new vscode.Position(1, 9);
+      editor.selection = new vscode.Selection(pos, pos);
+
+      await fim([{ text: "a + b;<|endoftext|>" }]);
+      const source = new vscode.CancellationTokenSource();
+      const t0 = Date.now();
+      const items = await api.completion.provideInlineCompletionItems(
+        doc, pos, { triggerKind: vscode.InlineCompletionTriggerKind.Invoke, selectedCompletionInfo: undefined }, source.token,
+      );
+      const ms = Date.now() - t0;
+      equal(items.map((i) => i.insertText), ["a + b;"], "suggestion");
+      ok(ms < 500, `suggestion took ${ms} ms`);
+      const body = (await requestsTo("/v1/completions")).at(-1);
+      ok(String(body.prompt).startsWith("<|fim_prefix|>export function add"), "Qwen FIM prompt");
+
+      // Through the editor, as a user would: trigger, then accept like Tab does.
+      await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+      await sleep(800);
+      await vscode.commands.executeCommand("editor.action.inlineSuggest.commit");
+      await waitFor(() => doc.getText().includes("return a + b;"), "suggestion inserted", 5000);
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      console.log(`    (F-17 provider latency with an instant model: ${ms} ms)`);
+    }],
+
+    ["F-18: the codebase index embeds the workspace, answers @codebase and serves codebase_search to Hermes", async () => {
+      writeFileSync(path.join(ws, "src", "auth.ts"), "export function login(user: string, password: string) {\n  return checkPassword(user, password);\n}\n");
+      writeFileSync(path.join(ws, "src", "math.ts"), "export function multiply(x: number, y: number) {\n  return x * y;\n}\n");
+      await svc.handleViewMessage({ type: "saveIndex", enabled: true, baseUrl: MOCK, model: "mock-embed" });
+      await waitFor(() => svc.state.index.status === "ready", `index ready (status ${svc.state.index.status} ${svc.state.index.error ?? ""})`, 60_000);
+      await waitFor(() => svc.state.phase === "ready", "Hermes ready again (IDE MCP attached)", 90_000);
+      ok(svc.state.index.files >= 2, `indexed files: ${svc.state.index.files}`);
+
+      const hits = await api.index.search("login user password", 3);
+      equal(hits[0]?.path, "src/auth.ts", "semantic search finds auth.ts");
+
+      await script([{ text: "Ketemu." }]);
+      await svc.handleViewMessage({ type: "send", text: "where is the login password check", context: [{ kind: "codebase", path: "" }] });
+      const users = JSON.stringify((await agentRequests()).at(-1).messages.filter((m: any) => m.role === "user"));
+      ok(users.includes("checkPassword(user, password)"), "@codebase attached the matching chunk");
+
+      let served = false;
+      for (let attempt = 0; attempt < 10 && !served; attempt++) {
+        await script([
+          { toolCalls: [{ name: "tool_call", arguments: { calls: [{ name: "mcp__hermes_ide__codebase_search", arguments: { query: "login password" } }] } }] },
+          { text: "ok" },
+        ]);
+        await svc.handleViewMessage({ type: "send", text: "cari login" });
+        served = JSON.stringify((await agentRequests()).at(-1).messages).includes("src/auth.ts:1-");
+        if (!served) await sleep(1000);
+      }
+      ok(served, "Hermes called codebase_search on the IDE MCP server");
+
+      // Incremental: a new file is picked up without a rebuild, and only it is embedded.
+      const before = (await requestsTo("/v1/embeddings")).length;
+      const filesBefore = svc.state.index.files;
+      writeFileSync(path.join(ws, "src", "session.ts"), "export function logout(sessionToken: string) {\n  revokeToken(sessionToken);\n}\n");
+      await waitFor(() => svc.state.index.files > filesBefore && svc.state.index.status === "ready", `new file indexed (files ${svc.state.index.files})`, 30_000);
+      const embeddedInputs = (await requestsTo("/v1/embeddings")).slice(before).flatMap((b) => b.input);
+      ok(embeddedInputs.length > 0 && embeddedInputs.every((i: string) => i.includes("session.ts")), `only the new file re-embedded: ${JSON.stringify(embeddedInputs).slice(0, 200)}`);
+      const embeddedSoFar = (await requestsTo("/v1/embeddings")).length;
+      await api.index.reconfigure();
+      await waitFor(() => svc.state.index.status === "ready", "index reloaded from disk", 30_000);
+      await sleep(500);
+      equal((await requestsTo("/v1/embeddings")).length, embeddedSoFar, "reloaded index needs no re-embedding");
+      const top = await api.index.search("logout sessionToken revokeToken", 3);
+      equal(top[0]?.path, "src/session.ts", `new file searchable; top=${JSON.stringify(top.map((h) => [h.path, h.score.toFixed(3), h.text.slice(0, 40)]))}`);
     }],
 
     ["a crashed Hermes can be restarted without reloading, keeping the session (NFR reliability)", async () => {

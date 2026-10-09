@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { McpServerView, ProfileView, ViewState } from "../../src/shared/protocol";
 import { t, type Locale } from "../../src/shared/strings";
+import { CompletionSection, IndexSection, indexStatusText } from "./FeaturesSection";
 import { send } from "./host";
 
 interface Props {
@@ -55,6 +56,18 @@ export function SettingsCard({ state, locale, open, onOpenChange }: Props) {
               <dd className="mono">{v}</dd>
             </div>
           ))}
+          {state.completion.enabled && (
+            <div>
+              <dt>Tab</dt>
+              <dd className="mono">{state.completion.model}{state.completion.avgLatencyMs !== undefined ? ` · ${state.completion.avgLatencyMs} ms` : ""}</dd>
+            </div>
+          )}
+          {state.index.enabled && (
+            <div>
+              <dt>Index</dt>
+              <dd className="mono">{indexStatusText(state.index, locale)}</dd>
+            </div>
+          )}
           {mcpOn > 0 && (
             <div>
               <dt>MCP</dt>
@@ -108,6 +121,8 @@ export function SettingsCard({ state, locale, open, onOpenChange }: Props) {
       {testLine}
       {approval}
       <McpSection state={state} locale={locale} />
+      <CompletionSection state={state} locale={locale} />
+      <IndexSection state={state} locale={locale} />
     </section>
   );
 }

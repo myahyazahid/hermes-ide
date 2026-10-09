@@ -33,6 +33,7 @@ export function decodeFile(filePath: string, bytes: Uint8Array, size = bytes.len
 }
 
 export function contextLabel(ref: ContextRef, cwd?: string): string {
+  if (ref.kind === "codebase") return "codebase";
   const rel = cwd ? relative(cwd, ref.path) : ref.path;
   if (ref.kind === "selection" && ref.startLine) {
     return `${path.basename(ref.path)} · ${ref.startLine}${ref.endLine && ref.endLine !== ref.startLine ? `-${ref.endLine}` : ""}`;
@@ -58,6 +59,8 @@ export function buildPromptBlocks(
 ): acp.ContentBlock[] {
   const blocks: acp.ContentBlock[] = [];
   for (const ref of dedupeContext(refs)) {
+    // @codebase is expanded into search hits by the host before this point.
+    if (ref.kind === "codebase") continue;
     const uri = pathToFileURL(ref.path).href;
     const shown = opts.cwd ? relative(opts.cwd, ref.path) : ref.path;
     if (ref.kind === "file") {
