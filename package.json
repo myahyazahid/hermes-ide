@@ -2,7 +2,7 @@
   "name": "hermes-ide",
   "displayName": "Hermes IDE",
   "description": "%ext.description%",
-  "version": "0.3.0",
+  "version": "0.3.3",
   "publisher": "yahya",
   "private": true,
   "license": "UNLICENSED",
@@ -27,14 +27,14 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "hermes",
-          "title": "Hermes Agent",
+          "id": "hermes-ide",
+          "title": "Hermes IDE",
           "icon": "media/hermes.svg"
         }
       ]
     },
     "views": {
-      "hermes": [
+      "hermes-ide": [
         {
           "type": "webview",
           "id": "hermes.chat",

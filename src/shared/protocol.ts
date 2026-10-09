@@ -66,6 +66,8 @@ export type PermissionAction = "allow_once" | "allow_session" | "allow_always_ws
 export interface ModelOption {
   id: string;
   label: string;
+  /** Provider or endpoint the model is served by, e.g. "Anthropic" or "Router.redscale.my.id". */
+  group: string;
 }
 
 /** F-16: the built-in "Hermes config" profile (id "hermes") plus named custom endpoints. */

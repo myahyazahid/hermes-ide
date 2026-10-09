@@ -413,3 +413,22 @@ details.feature summary .muted { font-weight: 400; }
 .progress { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin: 4px 0 8px; }
 .progress > div { height: 100%; background: var(--accent); transition: width 0.3s; }
 .mention-note { margin-left: auto; font-size: 0.85em; }
+
+/* Claude-style working indicator */
+.waiting { display: flex; align-items: baseline; gap: 6px; padding: 2px 2px 6px; font-size: 0.92em; }
+.waiting-glyph { display: inline-block; width: 1.1em; text-align: center; color: var(--accent); font-size: 1.15em; }
+.waiting-verb {
+  color: var(--accent);
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent) 40%, var(--vscode-foreground) 50%, var(--accent) 60%, var(--accent) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 2s linear infinite, verb-in 0.25s ease-out;
+}
+.waiting-meta { color: var(--muted); font-size: 0.9em; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+@keyframes verb-in { from { opacity: 0; transform: translateY(3px); } }
+@media (prefers-reduced-motion: reduce) {
+  .waiting-verb { animation: none; -webkit-text-fill-color: currentColor; }
+}

@@ -23,6 +23,7 @@ import { requestFim, type FimTemplate } from "../core/fim";
 import { sanitizeMcpServers, toAcpMcpServers, validateMcpServer, type McpServerSetting } from "../core/mcp";
 import type { McpHttpServer } from "../core/mcpHttpServer";
 import { cancelled, parsePermission, pickOption, selected, type ParsedPermission } from "../core/permission";
+import { parseProviderError, providerErrorKind } from "../core/providerError";
 import { HERMES_PROFILE_ID, toEndpoint } from "../core/profiles";
 import { Transcript } from "../core/transcript";
 import type {
@@ -84,6 +85,7 @@ export class HermesService implements vscode.Disposable {
   private readonly notesForNextPrompt: string[] = [];
   private readonly hookApprovals = new Map<string, number>();
   private readonly inlineReplies = new Map<string, string>();
+  private readonly reportedErrors = new Set<string>();
   private suppressUpdates = false;
   private seq = 0;
   private post: ((msg: HostToView) => void) | undefined;
@@ -328,7 +330,10 @@ export class HermesService implements vscode.Disposable {
         {
           onSessionUpdate: (n) => this.onSessionUpdate(n),
           onPermission: (req) => this.onPermission(req),
-          onLog: (line) => this.log.hermes(line),
+          onLog: (line) => {
+            this.log.hermes(line);
+            this.onHermesLogLine(line);
+          },
           onExit: (info) => this.onExit(client, info),
         },
         { name: "hermes-ide", version: String(this.context.extension.packageJSON.version ?? "0.0.0") },
@@ -447,6 +452,7 @@ export class HermesService implements vscode.Disposable {
     if (!(await this.ensureStarted()) || !this.client || !this.state.sessionId) return;
 
     const cwd = this.cwd;
+    this.reportedErrors.clear();
     this.transcript.addUser(trimmed, context.map((c) => ({ label: contextLabel(c, cwd), path: c.path })));
     this.scheduleFlush();
     const notes = this.notesForNextPrompt.splice(0);
@@ -549,11 +555,11 @@ export class HermesService implements vscode.Disposable {
     }
     const options: ModelOption[] = this.availableModels.map((m) => {
       const s = shortModelName(m.modelId, this.availableModels);
-      return { id: m.modelId, label: (shortCounts.get(s) ?? 0) > 1 ? m.name : s };
+      return { id: m.modelId, label: (shortCounts.get(s) ?? 0) > 1 ? m.name : s, group: modelGroup(m.modelId, m.name) };
     });
     const current = models?.currentModelId;
     if (current && !options.some((o) => o.id === current)) {
-      options.unshift({ id: current, label: shortModelName(current, this.availableModels) });
+      options.unshift({ id: current, label: shortModelName(current, this.availableModels), group: modelGroup(current, "") });
     }
     this.setState({ models: options, currentModelId: current });
   }
@@ -583,6 +589,19 @@ export class HermesService implements vscode.Disposable {
       this.sessionsChanged.fire();
     }
     this.scheduleFlush();
+  }
+
+  /** Hermes only tells ACP clients "retrying API call after error"; the reason is in its log. */
+  private onHermesLogLine(line: string): void {
+    if (!line.includes("Error code:")) return;
+    const err = parseProviderError(line);
+    if (!err) return;
+    const key = `${err.status}|${err.message}`;
+    if (this.reportedErrors.has(key)) return;
+    this.reportedErrors.add(key);
+    const kind = providerErrorKind(err.status);
+    const model = err.model ? ` (${err.model})` : "";
+    this.notice("error", this.tr("notice.providerError", err.status, err.message + model) + " " + this.tr(`providerHint.${kind}` as StringKey));
   }
 
   // ---- sessions (F-14) ----------------------------------------------------------------------
@@ -1153,6 +1172,15 @@ function readContextFile(file: string): FileContent {
   } catch (error) {
     return { kind: "error", message: (error as Error).message };
   }
+}
+
+/** "Anthropic · claude-x" → "Anthropic"; "custom:router.example.com:m" → "router.example.com". */
+function modelGroup(modelId: string, name: string): string {
+  if (name.includes(" · ")) return name.split(" · ")[0];
+  const custom = /^custom:([^:]+\.[^:]+):/.exec(modelId);
+  if (custom) return custom[1];
+  const i = modelId.indexOf(":");
+  return i > 0 ? modelId.slice(0, i) : "";
 }
 
 function toMcpView(s: McpServerSetting): McpServerView {

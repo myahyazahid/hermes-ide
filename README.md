@@ -12,8 +12,8 @@ Ekstensi VS Code yang menjalankan [Hermes Agent](https://hermes-agent.nousresear
 
 ```powershell
 npm install
-npm run package          # menghasilkan hermes-ide-0.3.0.vsix
-code --install-extension hermes-ide-0.3.0.vsix
+npm run package          # menghasilkan hermes-ide-0.3.3.vsix
+code --install-extension hermes-ide-0.3.3.vsix
 ```
 
 Buka folder proyek, lalu klik ikon ✦ **Hermes Agent** di activity bar. Hermes dijalankan saat panel dibuka dan dihentikan saat VS Code ditutup.

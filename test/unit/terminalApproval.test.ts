@@ -63,7 +63,8 @@ describe("withApprovalHook", () => {
 const realConfigPath = path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), ".hermes-missing"), "hermes", "config.yaml");
 describe.skipIf(!existsSync(realConfigPath))("withApprovalHook on the real Hermes config (in memory)", () => {
   it("only appends: every original line is untouched and all other values are identical", () => {
-    const original = readFileSync(realConfigPath, "utf8");
+    // If the user already enabled the hook, start from their config without it.
+    const original = withoutApprovalHook(readFileSync(realConfigPath, "utf8"));
     const out = withApprovalHook(original, CMD);
     expect(out.startsWith(original)).toBe(true);
     const before = parse(original) ?? {};

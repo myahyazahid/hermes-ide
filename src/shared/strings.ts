@@ -207,6 +207,13 @@ const id = {
   "index.mention": "pencarian semantik di seluruh proyek",
   "index.searchPrompt": "Cari di codebase (semantik)",
   "index.noResults": "Tidak ada hasil.",
+  "notice.providerError": "Endpoint model menolak permintaan ({0}): {1}.",
+  "providerHint.auth": "Periksa API key provider ini.",
+  "providerHint.credits": "Akun provider kehabisan kredit; pilih model lain di dropdown.",
+  "providerHint.rateLimit": "Batas pemakaian atau kredit provider tercapai; pilih model dari endpoint lain di dropdown atau coba lagi nanti.",
+  "providerHint.notFound": "Model atau URL tidak ditemukan di endpoint ini.",
+  "providerHint.server": "Server provider sedang bermasalah; Hermes akan mencoba ulang.",
+  "providerHint.other": "Lihat Agent Log untuk detail.",
 };
 
 type Key = keyof typeof id;
@@ -418,6 +425,13 @@ const en: Record<Key, string> = {
   "index.mention": "semantic search across the project",
   "index.searchPrompt": "Search the codebase (semantic)",
   "index.noResults": "No results.",
+  "notice.providerError": "The model endpoint rejected the request ({0}): {1}.",
+  "providerHint.auth": "Check this provider's API key.",
+  "providerHint.credits": "The provider account is out of credits; pick another model in the dropdown.",
+  "providerHint.rateLimit": "The provider's usage limit or credits were hit; pick a model from another endpoint in the dropdown or try again later.",
+  "providerHint.notFound": "The model or URL does not exist on this endpoint.",
+  "providerHint.server": "The provider is having trouble; Hermes will retry.",
+  "providerHint.other": "See the Agent Log for details.",
 };
 
 export type Locale = "id" | "en";

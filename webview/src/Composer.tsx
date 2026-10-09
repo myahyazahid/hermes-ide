@@ -16,6 +16,13 @@ interface Props {
 
 let nextRequestId = 1;
 
+/** Keeps the order Hermes gave while grouping models by provider/endpoint. */
+function groupModels(models: ViewState["models"]): [string, ViewState["models"]][] {
+  const groups = new Map<string, ViewState["models"]>();
+  for (const m of models) groups.set(m.group, [...(groups.get(m.group) ?? []), m]);
+  return [...groups];
+}
+
 export function chipLabel(ref: ContextRef, cwd?: string): string {
   if (ref.kind === "codebase") return "codebase";
   const name = ref.path.split(/[\\/]/).pop() ?? ref.path;
@@ -153,11 +160,23 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention }: 
           onChange={(e) => send({ type: "selectModel", modelId: e.target.value })}
         >
           {state.models.length === 0 && <option value="">{t(locale, "composer.noModel")}</option>}
-          {state.models.map((m) => (
-            <option key={m.id} value={m.id} title={m.id}>
-              {m.label}
-            </option>
-          ))}
+          {groupModels(state.models).map(([group, models]) =>
+            group ? (
+              <optgroup key={group} label={group}>
+                {models.map((m) => (
+                  <option key={m.id} value={m.id} title={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </optgroup>
+            ) : (
+              models.map((m) => (
+                <option key={m.id} value={m.id} title={m.id}>
+                  {m.label}
+                </option>
+              ))
+            ),
+          )}
         </select>
         {state.usage && state.usage.size > 0 && (
           <span className="usage" title={t(locale, "usage", state.usage.used, state.usage.size)}>

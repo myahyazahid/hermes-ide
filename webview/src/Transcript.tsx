@@ -52,7 +52,55 @@ export function Transcript({ items, locale, cwd, busy }: Props) {
           <ItemView key={b.item.id} item={b.item} locale={locale} cwd={cwd} />
         ),
       )}
+      {busy && <WaitingRow items={items} locale={locale} />}
       <div ref={end} />
+    </div>
+  );
+}
+
+const SPARKLE = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
+const VERBS = [
+  "Accomplishing", "Baking", "Booping", "Brewing", "Calculating", "Cerebrating", "Churning", "Coalescing",
+  "Cogitating", "Computing", "Concocting", "Conjuring", "Contemplating", "Cooking", "Crafting", "Crunching",
+  "Deciphering", "Deliberating", "Divining", "Elucidating", "Enchanting", "Envisioning", "Finagling", "Forging",
+  "Germinating", "Hatching", "Hermesing", "Honking", "Hustling", "Ideating", "Imagining", "Incubating",
+  "Inferring", "Manifesting", "Marinating", "Meandering", "Moseying", "Mulling", "Musing", "Noodling",
+  "Percolating", "Pondering", "Puttering", "Reticulating", "Ruminating", "Scheming", "Shimmying", "Simmering",
+  "Smooshing", "Spinning", "Stewing", "Synthesizing", "Tinkering", "Transmuting", "Unfurling", "Unravelling",
+  "Vibing", "Whirring", "Wibbling", "Wizarding", "Wrangling",
+];
+
+function pickVerb(prev?: string): string {
+  let next = prev;
+  while (next === prev) next = VERBS[Math.floor(Math.random() * VERBS.length)];
+  return next!;
+}
+
+/** Claude-style "Mulling…" row: shown for the whole turn unless the agent is waiting on a permission. */
+function WaitingRow({ items, locale }: { items: TranscriptItem[]; locale: Locale }) {
+  const blocked = items.some((i) => i.kind === "permission" && i.state === "pending");
+  const [since] = useState(Date.now());
+  const [now, setNow] = useState(Date.now());
+  const [frame, setFrame] = useState(0);
+  const [verb, setVerb] = useState(() => pickVerb());
+
+  useEffect(() => {
+    const glyph = setInterval(() => setFrame((f) => (f + 1) % SPARKLE.length), 120);
+    const clock = setInterval(() => setNow(Date.now()), 1000);
+    const words = setInterval(() => setVerb((v) => pickVerb(v)), 3500);
+    return () => {
+      clearInterval(glyph);
+      clearInterval(clock);
+      clearInterval(words);
+    };
+  }, []);
+
+  if (blocked) return null;
+  return (
+    <div className="waiting" role="status" aria-label={t(locale, "status.busy")}>
+      <span className="waiting-glyph" aria-hidden>{SPARKLE[frame]}</span>
+      <span key={verb} className="waiting-verb">{verb}…</span>
+      <span className="waiting-meta">({formatSeconds(now - since, locale)})</span>
     </div>
   );
 }
