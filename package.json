@@ -1,0 +1,237 @@
+{
+  "name": "hermes-ide",
+  "displayName": "Hermes IDE",
+  "description": "%ext.description%",
+  "version": "0.1.0",
+  "publisher": "yahya",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "%ext.untrusted%"
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hermes",
+          "title": "Hermes Agent",
+          "icon": "media/hermes.svg"
+        }
+      ]
+    },
+    "views": {
+      "hermes": [
+        {
+          "type": "webview",
+          "id": "hermes.chat",
+          "name": "%view.chat%"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "hermes.openChat",
+        "title": "%cmd.openChat%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.newSession",
+        "title": "%cmd.newSession%",
+        "category": "Hermes",
+        "icon": "$(add)"
+      },
+      {
+        "command": "hermes.stop",
+        "title": "%cmd.stop%",
+        "category": "Hermes",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "hermes.restart",
+        "title": "%cmd.restart%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.configureEndpoint",
+        "title": "%cmd.configureEndpoint%",
+        "category": "Hermes",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "hermes.showLog",
+        "title": "%cmd.showLog%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.exportLogs",
+        "title": "%cmd.exportLogs%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.clearAllowlist",
+        "title": "%cmd.clearAllowlist%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.diff.accept",
+        "title": "%cmd.diffAccept%",
+        "category": "Hermes",
+        "icon": "$(check)"
+      },
+      {
+        "command": "hermes.diff.reject",
+        "title": "%cmd.diffReject%",
+        "category": "Hermes",
+        "icon": "$(close)"
+      },
+      {
+        "command": "hermes.diff.toggleHunk",
+        "title": "%cmd.toggleHunk%",
+        "category": "Hermes"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "hermes.newSession",
+          "when": "view == hermes.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hermes.configureEndpoint",
+          "when": "view == hermes.chat",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "hermes.diff.accept",
+          "when": "hermes.diffReviewActive && resourceScheme == hermes-diff",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hermes.diff.reject",
+          "when": "hermes.diffReviewActive && resourceScheme == hermes-diff",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "hermes.diff.accept",
+          "when": "hermes.diffReviewActive"
+        },
+        {
+          "command": "hermes.diff.reject",
+          "when": "hermes.diffReviewActive"
+        },
+        {
+          "command": "hermes.diff.toggleHunk",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "hermes.diff.accept",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "hermes.diffReviewActive && editorFocus && resourceScheme == hermes-diff"
+      },
+      {
+        "command": "hermes.diff.reject",
+        "key": "ctrl+backspace",
+        "mac": "cmd+backspace",
+        "when": "hermes.diffReviewActive && editorFocus && resourceScheme == hermes-diff"
+      }
+    ],
+    "configuration": {
+      "title": "Hermes IDE",
+      "properties": {
+        "hermes.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%cfg.path%"
+        },
+        "hermes.endpoint.mode": {
+          "type": "string",
+          "enum": [
+            "hermes",
+            "custom"
+          ],
+          "default": "hermes",
+          "enumDescriptions": [
+            "%cfg.mode.hermes%",
+            "%cfg.mode.custom%"
+          ],
+          "markdownDescription": "%cfg.mode%"
+        },
+        "hermes.endpoint.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%cfg.baseUrl%"
+        },
+        "hermes.endpoint.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%cfg.model%"
+        },
+        "hermes.endpoint.contextLength": {
+          "type": "number",
+          "default": 0,
+          "markdownDescription": "%cfg.contextLength%"
+        },
+        "hermes.language": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "id",
+            "en"
+          ],
+          "default": "auto",
+          "markdownDescription": "%cfg.language%"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p . --noEmit && tsc -p webview --noEmit",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.mts",
+    "package": "node esbuild.mjs --production && npx --yes @vscode/vsce@latest package --no-dependencies --allow-missing-repository --skip-license --no-rewrite-relative-links",
+    "test:vscode": "node esbuild.mjs && node test/vscode/runTest.mjs"
+  },
+  "dependencies": {
+    "diff": "^8.0.2"
+  },
+  "devDependencies": {
+    "@agentclientprotocol/sdk": "^1.7.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/vscode": "^1.95.0",
+    "@vscode/test-electron": "^3.1.0",
+    "dompurify": "^3.2.3",
+    "esbuild": "^0.28.2",
+    "marked": "^15.0.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.2",
+    "vitest": "^5.0.3"
+  }
+}

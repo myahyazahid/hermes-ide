@@ -1,0 +1,8 @@
+**
+!dist/**
+!media/**
+!package.json
+!package.nls.json
+!package.nls.id.json
+!README.md
+!LICENSE
