@@ -41,6 +41,7 @@ import { addCall, parseApiCallLine } from "../core/apiCallLog";
 import { HERMES_PROFILE_ID, toEndpoint } from "../core/profiles";
 import { parseSessionTime } from "../core/time";
 import { Transcript, transcriptToMarkdown } from "../core/transcript";
+import { createToolImageFinder } from "../core/toolImages";
 import type {
   AgentMode, ContextRef, HostToView, LanguageView, LearningView, McpServerView, MentionItem, MemoryPanel, MemoryTarget, ModelOption, PermissionAction, RoutingView, SessionView, SkillsPanel, TerminalApprovalState, TranscriptItem, ViewState,
   ViewToHost,
@@ -119,7 +120,8 @@ export class HermesService implements vscode.Disposable {
   private starting: Promise<boolean> | undefined;
   /** A restart in progress: a message sent meanwhile waits for it instead of being dropped. */
   private restarting: Promise<void> | undefined;
-  private transcript = new Transcript();
+  private readonly findToolImages = createToolImageFinder(() => this.cwd);
+  private transcript = new Transcript(Date.now, this.findToolImages);
   private readonly pending = new Map<string, PendingPermission>();
   private readonly notesForNextPrompt: string[] = [];
   /** Sessions that already got the workspace note (see send). */
@@ -1002,7 +1004,7 @@ export class HermesService implements vscode.Disposable {
   }
 
   private resetTranscript(): void {
-    this.transcript = new Transcript();
+    this.transcript = new Transcript(Date.now, this.findToolImages);
     this.post?.({ type: "reset", items: [] });
   }
 

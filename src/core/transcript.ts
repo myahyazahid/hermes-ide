@@ -4,6 +4,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 import type { ToolStatus, TranscriptItem } from "../shared/protocol";
 import { diffStat } from "./hunks";
 import { stripProjectRules } from "./rules";
+import type { ToolImageFinder } from "./toolImages";
 
 type UserItem = Extract<TranscriptItem, { kind: "user" }>;
 
@@ -62,7 +63,13 @@ export class Transcript {
   private seq = 0;
   private userTurns = 0;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /** Tool calls already searched for images, so a late update does not read the files again. */
+  private readonly imagesFound = new Set<string>();
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly findImages?: ToolImageFinder,
+  ) {}
 
   all(): TranscriptItem[] {
     return this.items.map((i) => ({ ...i }) as TranscriptItem);
@@ -229,7 +236,17 @@ export class Transcript {
         if (!item.paths.includes(c.path)) item.paths.push(c.path);
       } else if (c.type === "content" && c.content.type === "text") {
         item.detail = clip(c.content.text);
+      } else if (c.type === "content" && c.content.type === "image") {
+        const src = `data:${c.content.mimeType};base64,${c.content.data}`;
+        const images = (item.images ??= []);
+        if (!images.some((i) => i.src === src)) images.push({ src, name: c.content.uri?.split(/[\\/]/).pop() || `image-${images.length + 1}` });
       }
+    }
+    if (item.status === "completed" && this.findImages && !this.imagesFound.has(id)) {
+      this.imagesFound.add(id);
+      const known = new Set(item.images?.map((i) => i.path));
+      const found = this.findImages(item).filter((i) => !known.has(i.path));
+      if (found.length) item.images = [...(item.images ?? []), ...found];
     }
     this.changed.add(id);
   }
@@ -276,6 +293,7 @@ export function transcriptToMarkdown(items: TranscriptItem[], title?: string): s
         const parts = [`**${item.title}**${item.description ? ` — ${item.description}` : ""} _(${item.status})_`];
         if (item.input) parts.push(fence(item.input));
         if (item.detail) parts.push(fence(item.detail));
+        for (const img of item.images ?? []) parts.push(img.path ? `![${img.name}](${encodeURI(img.path.replace(/\\/g, "/"))})` : `_[image: ${img.name}]_`);
         out.push(parts.join("\n\n"));
         break;
       }

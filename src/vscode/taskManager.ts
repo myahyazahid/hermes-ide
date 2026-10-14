@@ -11,6 +11,7 @@ import type { CommandAllowlist } from "../core/commandPolicy";
 import { cancelled, parsePermission, pickOption, selected } from "../core/permission";
 import { decideTaskPermission, type DenyReason } from "../core/taskPolicy";
 import { Transcript, transcriptToMarkdown } from "../core/transcript";
+import { createToolImageFinder } from "../core/toolImages";
 import {
   applyPatch, branchFor, commitTask, createWorktree, headCommit, newTaskId, removeTask, repoRoot, taskPatch,
 } from "../core/worktree";
@@ -205,7 +206,7 @@ export class TaskManager implements vscode.Disposable {
 
   /** Runs the agent to the end of its turn, then commits what it did. Never throws. */
   private async run(record: TaskRecord): Promise<void> {
-    const state: Running = { transcript: new Transcript(), stopRequested: false };
+    const state: Running = { transcript: new Transcript(Date.now, createToolImageFinder(() => record.cwd)), stopRequested: false };
     this.running.set(record.id, state);
     this.transcripts.set(record.id, state.transcript);
     let outcome: "done" | "failed" | "stopped" = "done";

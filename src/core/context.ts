@@ -11,7 +11,7 @@ export const MAX_FOLDER_ENTRIES = 300;
 /** Same cap Hermes applies to attached files. */
 export const MAX_FILE_BYTES = 200_000;
 
-const IMAGE_MIME: Record<string, string> = {
+export const IMAGE_MIME: Record<string, string> = {
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
 };
 

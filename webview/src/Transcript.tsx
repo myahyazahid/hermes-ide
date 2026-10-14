@@ -26,15 +26,35 @@ export function Transcript({ items, locale, cwd, busy, turnUsage }: Props) {
   const end = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [pinnedId, setPinnedId] = useState<string>();
+
+  /** Like Claude Code: the user message of the turn being read stays pinned on top once its bubble scrolls away. */
+  const updatePinned = () => {
+    const el = container.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    let id: string | undefined;
+    for (const node of el.querySelectorAll<HTMLElement>(".user-turn[data-id]")) {
+      if (node.getBoundingClientRect().bottom <= top + 4) id = node.dataset.id;
+      else break;
+    }
+    setPinnedId(id);
+  };
 
   // Follow the stream unless the user scrolled up to read.
   useEffect(() => {
     if (stick.current) end.current?.scrollIntoView({ block: "end" });
+    updatePinned();
   }, [items, busy]);
 
   const onScroll = () => {
     const el = container.current;
     if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    updatePinned();
+  };
+
+  const jumpTo = (id: string) => {
+    container.current?.querySelector<HTMLElement>(`.user-turn[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" });
   };
 
   if (!items.length) {
@@ -49,26 +69,49 @@ export function Transcript({ items, locale, cwd, busy, turnUsage }: Props) {
   }
 
   const lastId = items[items.length - 1]?.id;
+  const pinned = pinnedId ? items.find((i): i is UserItem => i.kind === "user" && i.id === pinnedId) : undefined;
   return (
-    <div className="transcript" ref={container} onScroll={onScroll} role="log" aria-live="polite" aria-busy={busy}>
-      {turns.map((turn, i) => {
-        const waiting = busy && i === turns.length - 1;
-        return (
-          <div className="turn" key={turn.id}>
-            {turn.user && <UserMessage item={turn.user} locale={locale} busy={busy} />}
-            {(turn.steps.length > 0 || waiting) && (
-              <div className="timeline">
-                {turn.steps.map((step) => (
-                  <Step key={step.id} item={step} locale={locale} cwd={cwd} active={busy && step.id === lastId} />
-                ))}
-                {waiting && <WaitingRow items={items} locale={locale} usage={turnUsage} />}
-              </div>
-            )}
-          </div>
-        );
-      })}
-      <div ref={end} />
+    <div className="transcript-wrap">
+      {pinned && <PinnedPrompt item={pinned} locale={locale} onJump={() => jumpTo(pinned.id)} />}
+      <div className="transcript" ref={container} onScroll={onScroll} role="log" aria-live="polite" aria-busy={busy}>
+        {turns.map((turn, i) => {
+          const waiting = busy && i === turns.length - 1;
+          return (
+            <div className="turn" key={turn.id}>
+              {turn.user && <UserMessage item={turn.user} locale={locale} busy={busy} />}
+              {(turn.steps.length > 0 || waiting) && (
+                <div className="timeline">
+                  {turn.steps.map((step) => (
+                    <Step key={step.id} item={step} locale={locale} cwd={cwd} active={busy && step.id === lastId} />
+                  ))}
+                  {waiting && <WaitingRow items={items} locale={locale} usage={turnUsage} />}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div ref={end} />
+      </div>
     </div>
+  );
+}
+
+function PinnedPrompt({ item, locale, onJump }: { item: UserItem; locale: Locale; onJump: () => void }) {
+  return (
+    <button type="button" className="pinned-prompt" title={t(locale, "prompt.jump")} onClick={onJump}>
+      {item.at !== undefined && <span className="stamp">{clockTime(item.at, locale)}</span>}
+      {item.context && item.context.length > 0 && (
+        <span className="pinned-chips">
+          {item.context.map((c) => (
+            <span key={`${c.kind}:${c.label}`} className="chip">
+              {c.image ? <img className="chip-thumb" src={c.image} alt="" /> : null}
+              <span className="mono">{c.kind === "image" || c.kind === "rules" ? c.label : `@${c.label}`}</span>
+            </span>
+          ))}
+        </span>
+      )}
+      <span className="pinned-text">{item.text}</span>
+    </button>
   );
 }
 
@@ -155,7 +198,7 @@ function WaitingRow({ items, locale, usage }: { items: TranscriptItem[]; locale:
 
 function UserMessage({ item, locale, busy }: { item: UserItem; locale: Locale; busy: boolean }) {
   return (
-    <div className="user-turn">
+    <div className="user-turn" data-id={item.id}>
       {item.at !== undefined && <div className="stamp">{clockTime(item.at, locale)}</div>}
       {item.context && item.context.length > 0 && (
         <div className="chips sent">
@@ -342,6 +385,15 @@ function ToolStep({ tool, locale, cwd }: { tool: ToolItem; locale: Locale; cwd?:
             </div>
           )}
           {long && <div className="io-more">{t(locale, open ? "tool.showLess" : "tool.showMore")}</div>}
+        </div>
+      )}
+      {tool.images && tool.images.length > 0 && (
+        <div className="tool-images">
+          {tool.images.map((img, i) => (
+            <button key={img.path ?? i} type="button" className="tool-image" title={`${t(locale, "image.open")}: ${img.path ?? img.name}`} onClick={() => showImage(img.src, img.name)}>
+              <img src={img.src} alt={img.name} loading="lazy" />
+            </button>
+          ))}
         </div>
       )}
     </div>

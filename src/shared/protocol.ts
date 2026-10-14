@@ -14,6 +14,13 @@ export type Phase =
 
 export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
 
+/** An image on a tool card: a data: URL, the file name, and the file on disk when it came from one. */
+export interface ToolImage {
+  src: string;
+  name: string;
+  path?: string;
+}
+
 /** F-12: something attached to a prompt with @file, @folder or a selection. */
 export interface ContextRef {
   /** "codebase" = semantic search over the index with the prompt text (F-18). */
@@ -68,6 +75,8 @@ export type TranscriptItem =
       description?: string;
       /** Tool output, shown as OUT. */
       detail?: string;
+      /** Images the tool returned, produced or read (e.g. a screenshot), shown under its output. */
+      images?: ToolImage[];
     }
   | {
       kind: "permission";
