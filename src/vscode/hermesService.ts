@@ -126,6 +126,12 @@ export class HermesService implements vscode.Disposable {
   private readonly reportedErrors = new Set<string>();
   private suppressUpdates = false;
   private seq = 0;
+  /** Messages typed while a turn runs (see send). */
+  private readonly queue: { id: string; text: string; context: ContextRef[] }[] = [];
+  /** send() is between its busy check and the turn showing as busy. */
+  private turnStarting = false;
+  /** "Send now" stopped the running turn: the queue goes out once it has ended. */
+  private sendQueueAfterStop = false;
   /** Every open chat view: the sidebar one and, when opened, the one in an editor tab. */
   private readonly views = new Set<(msg: HostToView) => void>();
   /** The view the user touched last; context chips go there instead of to every composer. */
@@ -322,6 +328,17 @@ export class HermesService implements vscode.Disposable {
         return this.send(msg.text, msg.context ?? []);
       case "stop":
         return this.stop();
+      case "sendQueued":
+        return this.sendQueued();
+      case "unqueue": {
+        const i = this.queue.findIndex((q) => q.id === msg.id);
+        if (i < 0) return;
+        const [item] = this.queue.splice(i, 1);
+        this.publishQueue();
+        // "Edit": the view puts the text back in the composer, its chips come from here.
+        if (msg.edit) for (const ref of item.context) reply?.({ type: "addContext", ref });
+        return;
+      }
       case "newSession":
         return this.newSession();
       case "setMode":
@@ -515,6 +532,12 @@ export class HermesService implements vscode.Disposable {
   }
 
   private setState(patch: Partial<ViewState>): void {
+    // Queued messages belong to the session they were typed in.
+    if ("sessionId" in patch && patch.sessionId !== this.state.sessionId && this.queue.length) {
+      this.queue.length = 0;
+      this.sendQueueAfterStop = false;
+      patch = { ...patch, queued: [] };
+    }
     this.state = { ...this.state, ...patch };
     this.post?.({ type: "state", state: this.state });
     this.stateChanged.fire(this.state);
@@ -736,15 +759,51 @@ export class HermesService implements vscode.Disposable {
 
   // ---- conversation -------------------------------------------------------------------------
 
+  /** A message sent while a turn runs waits in the queue and goes out, merged, once the turn completes. */
   async send(text: string, context: ContextRef[] = []): Promise<void> {
     const trimmed = text.trim();
-    if (!trimmed || this.state.busy) return;
+    if (!trimmed) return;
+    if (this.state.busy || this.turnStarting) {
+      this.queue.push({ id: `q${++this.seq}`, text: trimmed, context });
+      this.publishQueue();
+      return;
+    }
+    this.turnStarting = true;
+    let completed = false;
+    try {
+      completed = await this.runTurn(trimmed, context);
+    } finally {
+      this.turnStarting = false;
+    }
+    // A stopped or failed turn leaves the queue for the user, unless "send now" stopped it.
+    if (completed || this.sendQueueAfterStop) void this.sendQueued();
+  }
+
+  /** Sends everything queued as one message: right away when idle, after stopping the running turn otherwise. */
+  async sendQueued(): Promise<void> {
+    if (!this.queue.length) return;
+    if (this.state.busy || this.turnStarting) {
+      this.sendQueueAfterStop = true;
+      return this.stop();
+    }
+    this.sendQueueAfterStop = false;
+    const items = this.queue.splice(0);
+    this.publishQueue();
+    await this.send(items.map((q) => q.text).join("\n\n"), items.flatMap((q) => q.context));
+  }
+
+  private publishQueue(): void {
+    this.setState({ queued: this.queue.map((q) => ({ id: q.id, text: q.text, attachments: q.context.length })) });
+  }
+
+  /** Runs one turn; true when it finished on its own (not stopped, not failed, not refused before it started). */
+  private async runTurn(trimmed: string, context: ContextRef[]): Promise<boolean> {
     this.updatePrivacy();
     if (this.state.privacy?.blocked) {
       this.notice("error", this.tr("privacy.blocked", this.state.privacy.blocked));
-      return;
+      return false;
     }
-    if (!(await this.ensureStarted()) || !this.client || !this.state.sessionId) return;
+    if (!(await this.ensureStarted()) || !this.client || !this.state.sessionId) return false;
 
     const cwd = this.cwd;
     const sessionId = this.state.sessionId;
@@ -811,6 +870,7 @@ export class HermesService implements vscode.Disposable {
       this.sessionsChanged.fire();
       if (!outcome.stopped) this.notifier.notify("done", this.state.sessionTitle ?? trimmed.split("\n")[0].slice(0, 80), Date.now() - this.turnStartedAt);
     }
+    return !outcome.stopped && !outcome.error;
   }
 
   /** Sends one prompt and records what it cost. Never throws: a failure comes back in `error`. */

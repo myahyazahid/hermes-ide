@@ -206,6 +206,50 @@ export async function run(): Promise<void> {
       ok(Date.now() - started < 15_000, "stopped quickly");
     }],
 
+    ["messages sent while a turn runs are queued and go out together when it ends", async () => {
+      await script([{ text: "pertama", delayMs: 3000 }, { text: "kedua" }]);
+      const sending = svc.handleViewMessage({ type: "send", text: "satu" });
+      await waitFor(() => svc.state.busy, "busy");
+      await svc.handleViewMessage({ type: "send", text: "antre-A" });
+      await svc.handleViewMessage({ type: "send", text: "antre-B" });
+      equal(svc.state.queued?.length, 2, "both messages wait in the queue");
+      await sending;
+      const merged = await waitFor(() => items().find((i) => i.kind === "user" && i.text === "antre-A\n\nantre-B"), "the queue sent as one message");
+      ok(merged, "merged message in the transcript");
+      await waitFor(() => !svc.state.busy && !svc.state.queued?.length, "second turn done and queue empty");
+    }],
+
+    ["a stopped turn keeps the queue; send now delivers it", async () => {
+      await script([{ text: "lambat", delayMs: 20_000 }, { text: "oke" }]);
+      const sending = svc.handleViewMessage({ type: "send", text: "tunggu lagi" });
+      await waitFor(() => svc.state.busy, "busy");
+      await svc.handleViewMessage({ type: "send", text: "antre-stop" });
+      await svc.handleViewMessage({ type: "stop" });
+      await sending;
+      equal(svc.state.queued?.length, 1, "queue kept after stop");
+      await svc.handleViewMessage({ type: "sendQueued" });
+      ok(items().some((i) => i.kind === "user" && i.text === "antre-stop"), "queued message sent");
+      equal(svc.state.queued?.length ?? 0, 0, "queue empty");
+    }],
+
+    ["super auto runs a dangerous command without a card", async () => {
+      const victim = path.join(ws, "victim-super");
+      mkdirSync(victim, { recursive: true });
+      writeFileSync(path.join(victim, "gone.txt"), "x");
+      const command = `rm -rf "${victim.replace(/\\/g, "/")}"`;
+      try {
+        await svc.handleViewMessage({ type: "setMode", mode: "superAuto" });
+        await script([{ toolCalls: [{ name: "terminal", arguments: { command } }] }, { text: "Dihapus." }]);
+        await svc.handleViewMessage({ type: "send", text: "hapus victim-super" });
+        const card = permissionItems().filter((p) => p.variant === "execute" && p.command === command).at(-1);
+        equal(card?.state, "allowed", "allowed automatically: " + JSON.stringify(card));
+        ok(card?.dangerReason, "the risk is still recorded");
+        ok(!existsSync(victim), "the command ran");
+      } finally {
+        await svc.handleViewMessage({ type: "setMode", mode: "manual" });
+      }
+    }],
+
     // ---- Phase 2 ------------------------------------------------------------------------
 
     ["story 4: every ordinary terminal command asks first; 'always allow' skips the card next time", async () => {

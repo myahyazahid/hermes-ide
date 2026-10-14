@@ -69,7 +69,9 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
   const [query, setQuery] = useState<{ value: string; start: number; requestId: number } | undefined>();
   const [active, setActive] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout>>();
-  const canSend = !state.busy && ["ready", "stopped", "crashed"].includes(state.phase) && text.trim().length > 0;
+  // While the agent works, sending queues the message for when the turn ends.
+  const canSend = (state.busy || ["ready", "stopped", "crashed"].includes(state.phase)) && text.trim().length > 0;
+  const queued = state.queued ?? [];
   const results = query && mention?.requestId === query.requestId ? mention.items : undefined;
 
   const submit = useCallback(() => {
@@ -284,6 +286,36 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
           ))}
         </ul>
       )}
+      {queued.length > 0 && (
+        <div className="queue" role="list" aria-label={t(locale, "queue.title")}>
+          <div className="queue-head">
+            <span>{t(locale, state.busy ? "queue.title" : "queue.waiting")}</span>
+            <button type="button" className="link-btn" onClick={() => send({ type: "sendQueued" })}>
+              {t(locale, state.busy ? "queue.sendNow" : "queue.send")}
+            </button>
+          </div>
+          {queued.map((q) => (
+            <div key={q.id} className="queue-item" role="listitem">
+              <span className="queue-text" title={q.text}>{q.text}</span>
+              {q.attachments > 0 && <span className="queue-att">+{q.attachments}</span>}
+              <button
+                type="button"
+                className="link-btn"
+                onClick={() => {
+                  setText((cur) => (cur.trim() ? `${q.text}\n\n${cur}` : q.text));
+                  send({ type: "unqueue", id: q.id, edit: true });
+                  inputRef.current?.focus();
+                }}
+              >
+                {t(locale, "queue.edit")}
+              </button>
+              <button type="button" className="queue-x" aria-label={t(locale, "queue.remove")} title={t(locale, "queue.remove")} onClick={() => send({ type: "unqueue", id: q.id })}>
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {chips.length > 0 && (
         <div className="chips">
           {chips.map((c, i) => {
@@ -305,7 +337,7 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
         ref={inputRef}
         value={text}
         rows={2}
-        placeholder={`${t(locale, "composer.placeholder")} ${t(locale, "composer.mentionHint")}`}
+        placeholder={state.busy ? t(locale, "queue.placeholder") : `${t(locale, "composer.placeholder")} ${t(locale, "composer.mentionHint")}`}
         aria-label={t(locale, "composer.placeholder")}
         aria-autocomplete="list"
         onChange={(e) => {
@@ -435,6 +467,11 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
           <ModeIcon mode={state.mode} size={14} />
           <span>{modeLabel(state.mode, locale)}</span>
         </button>
+        {state.busy && canSend && (
+          <button type="button" className="send" onClick={submit} title={t(locale, "queue.add")} aria-label={t(locale, "queue.add")}>
+            ↑
+          </button>
+        )}
         {state.busy ? (
           <button type="button" className="stop" onClick={() => send({ type: "stop" })} title="Esc">
             ■ {t(locale, "composer.stop")}

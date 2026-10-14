@@ -35,7 +35,7 @@ Kenapa profil kustom butuh `HERMES_HOME` sendiri: Hermes membaca provider dan ba
 
 ## Alur kerja
 
-- **Chat**: Enter untuk kirim, Shift+Enter baris baru, Esc atau tombol Stop untuk menghentikan langkah agent. Detail tampilan panel ada di bagian [Panel chat](#panel-chat).
+- **Chat**: Enter untuk kirim, Shift+Enter baris baru, Esc atau tombol Stop untuk menghentikan langkah agent. Pesan yang dikirim saat agent masih bekerja masuk antrean di atas composer dan terkirim (digabung jadi satu pesan) begitu giliran selesai; tiap pesan bisa di-Edit atau dihapus, dan **Hentikan & kirim sekarang** menghentikan giliran lalu langsung mengirim antrean. Bila giliran dihentikan dengan Stop atau gagal, antrean tidak terkirim sendiri. Detail tampilan panel ada di bagian [Panel chat](#panel-chat).
 - **Konteks**: ketik `@` di composer untuk memilih file atau folder, atau klik **+** untuk memilih file lewat dialog. Seleksi editor ditambahkan dengan **Ctrl+Alt+L** atau klik kanan → *Tambahkan Seleksi ke Chat*; file/folder di Explorer lewat klik kanan → *Tambahkan ke Chat Hermes*. Isi file disematkan langsung ke prompt (maks 200 KB per file).
 - **Gambar**: tempel gambar dari clipboard dengan **Ctrl+V** di composer. Gambar tampil sebagai chip `image.png 547×690` dan dikirim ke model sebagai blok gambar ACP.
 - **Aktivitas tool**: setiap baca/edit/jalankan tampil di timeline dengan status, durasi, `+tambah -hapus`, serta input (IN) dan output (OUT).

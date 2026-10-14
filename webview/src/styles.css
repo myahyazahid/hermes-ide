@@ -414,6 +414,13 @@ button.stop:hover { background: var(--vscode-toolbar-hoverBackground); }
 /* ---- Phase 2: context chips & @-mentions (F-12) ----------------------------------- */
 .composer { position: relative; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
+.queue { display: flex; flex-direction: column; gap: 3px; margin: 0 0 6px; padding: 5px 8px; border: 1px dashed var(--border); border-radius: 6px; font-size: 0.9em; }
+.queue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--vscode-descriptionForeground); font-size: 0.92em; }
+.queue-item { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-att { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+.queue-x { padding: 0 4px; color: var(--vscode-descriptionForeground); }
+.queue-x:hover { color: var(--vscode-foreground); }
 .chip {
   display: inline-flex;
   align-items: center;

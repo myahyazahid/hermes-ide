@@ -400,6 +400,15 @@ export interface ViewState {
   onboarding?: boolean;
   /** Whether the Hermes install can be started from the panel (Windows only). */
   canInstallHermes?: boolean;
+  /** Messages typed while the agent works; they go out together when the turn ends. */
+  queued?: QueuedView[];
+}
+
+export interface QueuedView {
+  id: string;
+  text: string;
+  /** Number of context chips sent with it. */
+  attachments: number;
 }
 
 export interface MentionItem {
@@ -448,6 +457,10 @@ export type ViewToHost =
   | { type: "ready" }
   | { type: "send"; text: string; context?: ContextRef[] }
   | { type: "stop" }
+  /** Sends the queued messages now, stopping the running turn first. */
+  | { type: "sendQueued" }
+  /** Drops a queued message; with `edit`, it goes back to the composer. */
+  | { type: "unqueue"; id: string; edit?: boolean }
   | { type: "newSession" }
   /** Composer "+" / "/attach": file picker, picked files come back as addContext. */
   | { type: "attachFile" }
