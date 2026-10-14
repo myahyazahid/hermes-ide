@@ -7,12 +7,15 @@ import { t, type Locale } from "../shared/strings";
 export class HermesStatusBar implements vscode.Disposable {
   private readonly connection = vscode.window.createStatusBarItem("hermes.connection", vscode.StatusBarAlignment.Left, 100);
   private readonly model = vscode.window.createStatusBarItem("hermes.model", vscode.StatusBarAlignment.Right, 100);
+  private readonly privacy = vscode.window.createStatusBarItem("hermes.privacy", vscode.StatusBarAlignment.Right, 101);
 
   constructor(private readonly locale: () => Locale) {
     this.connection.name = "Hermes · ACP";
     this.model.name = "Hermes · model";
     this.connection.command = "hermes.openChat";
     this.model.command = "hermes.switchProfile";
+    this.privacy.name = "Hermes · local mode";
+    this.privacy.command = "hermes.privacy.report";
   }
 
   update(state: ViewState): void {
@@ -37,6 +40,15 @@ export class HermesStatusBar implements vscode.Disposable {
           : undefined;
     this.connection.show();
 
+    if (state.privacy?.localOnly) {
+      this.privacy.text = `$(lock) ${t(loc, "privacy.badge")}`;
+      this.privacy.tooltip = state.privacy.blocked ? `${t(loc, "privacy.blocked", state.privacy.blocked)}\n${t(loc, "privacy.blockedFix")}` : t(loc, "privacy.badgeTooltip");
+      this.privacy.backgroundColor = state.privacy.blocked ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+      this.privacy.show();
+    } else {
+      this.privacy.hide();
+    }
+
     const label = state.models.find((m) => m.id === state.currentModelId)?.label ?? shortModelName(state.currentModelId);
     if (state.phase === "ready" && label) {
       this.model.text = label;
@@ -52,5 +64,6 @@ ${t(loc, "statusbar.switchProfile")}`;
   dispose(): void {
     this.connection.dispose();
     this.model.dispose();
+    this.privacy.dispose();
   }
 }

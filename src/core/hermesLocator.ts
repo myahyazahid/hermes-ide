@@ -4,8 +4,9 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-/** Hermes versions the ACP integration was validated against (PRD: pin supported versions). */
-export const SUPPORTED_HERMES = { min: "0.21.0", maxExclusive: "0.22.0" };
+import { SUPPORTED_HERMES, TESTED_HERMES } from "../shared/hermesVersions";
+
+export { SUPPORTED_HERMES, TESTED_HERMES };
 
 export interface LocateOptions {
   configuredPath?: string;

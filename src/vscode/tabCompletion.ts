@@ -5,6 +5,7 @@ import * as vscode from "vscode";
 import { maskKey } from "../core/endpoint";
 import { contextWindow, requestFim, wantsMultiline, type FimEndpoint, type FimTemplate } from "../core/fim";
 import type { CompletionView } from "../shared/protocol";
+import { blockedByLocalMode } from "./privacyGate";
 
 export const COMPLETION_SECRET = "hermes.completion.apiKey";
 const PREFIX_CHARS = 3000;
@@ -34,7 +35,7 @@ export class TabCompletion implements vscode.InlineCompletionItemProvider, vscod
     this.disposables.push(
       vscode.languages.registerInlineCompletionItemProvider({ pattern: "**" }, this),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration("hermes.completion")) {
+        if (e.affectsConfiguration("hermes.completion") || e.affectsConfiguration("hermes.privacy")) {
           this.cache.clear();
           this.last = undefined;
           this.updateStatus();
@@ -56,6 +57,7 @@ export class TabCompletion implements vscode.InlineCompletionItemProvider, vscod
     const baseUrl = this.cfg.get<string>("baseUrl", "").trim();
     const model = this.cfg.get<string>("model", "").trim();
     if (!baseUrl || !model) return undefined;
+    if (blockedByLocalMode(baseUrl)) return undefined; // full local mode: nothing is sent to a remote endpoint
     return {
       baseUrl, model, apiKey: this.apiKey,
       template: this.cfg.get<FimTemplate>("template", "auto"),
@@ -72,6 +74,7 @@ export class TabCompletion implements vscode.InlineCompletionItemProvider, vscod
     const avg = this.latencies.length ? Math.round(this.latencies.reduce((a, b) => a + b, 0) / this.latencies.length) : undefined;
     return {
       enabled: this.enabled,
+      blocked: this.enabled && blockedByLocalMode(this.cfg.get<string>("baseUrl", "")),
       baseUrl: this.cfg.get<string>("baseUrl", ""),
       model: this.cfg.get<string>("model", ""),
       template: this.cfg.get<FimTemplate>("template", "auto"),

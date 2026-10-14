@@ -1,28 +1,40 @@
 // Custom API page (F-04) with endpoint profiles (F-16), the terminal-approval status (story 4)
 // and MCP servers (F-15).
 import { useEffect, useState } from "react";
-import type { McpServerView, ProfileView, ViewState } from "../../src/shared/protocol";
-import { t, type Locale } from "../../src/shared/strings";
+import { SUPPORTED_HERMES } from "../../src/shared/hermesVersions";
+import { ENDPOINT_PRESETS, PRESET_GROUPS, type EndpointPreset } from "../../src/shared/presets";
+import type { HostToView, McpServerView, ProfileView, RoutingView, ViewState } from "../../src/shared/protocol";
+import { t, type Locale, type StringKey } from "../../src/shared/strings";
 import { CompletionSection, IndexSection, indexStatusText } from "./FeaturesSection";
 import { send } from "./host";
+
+/** Values a preset from the quick-start card pre-fills into the new-profile form. `key` changes per click to reset the form. */
+export interface PresetDraft {
+  key: number;
+  name: string;
+  baseUrl: string;
+  modelHint: string;
+  presetId?: string;
+}
 
 interface Props {
   state: ViewState;
   locale: Locale;
   open: boolean;
   onOpenChange(open: boolean): void;
+  draft?: PresetDraft;
 }
 
 const NEW = "__new__";
 
-export function SettingsCard({ state, locale, open, onOpenChange }: Props) {
+export function SettingsCard({ state, locale, open, onOpenChange, draft }: Props) {
   const { profiles, activeProfileId, hermesConfig } = state.endpoint;
   const active = profiles.find((p) => p.id === activeProfileId) ?? profiles[0];
   const [selected, setSelected] = useState(activeProfileId);
 
   useEffect(() => {
-    if (open) setSelected(activeProfileId);
-  }, [open, activeProfileId]);
+    if (open) setSelected(draft ? NEW : activeProfileId);
+  }, [open, activeProfileId, draft]);
 
   const notSet = t(locale, "api.notSet");
   const testLine = <TestLine state={state} locale={locale} />;
@@ -115,11 +127,23 @@ export function SettingsCard({ state, locale, open, onOpenChange }: Props) {
       {editing?.kind === "hermes" ? (
         <HermesProfile state={state} locale={locale} isActive={editing.id === activeProfileId} />
       ) : (
-        <CustomProfileForm key={selected} profile={editing} locale={locale} state={state} onSaved={() => onOpenChange(false)} />
+        <CustomProfileForm
+          key={selected === NEW ? `new-${draft?.key ?? 0}` : selected}
+          profile={editing}
+          draft={selected === NEW ? draft : undefined}
+          locale={locale}
+          state={state}
+          onSaved={() => onOpenChange(false)}
+        />
       )}
 
       {testLine}
       {approval}
+      <LanguageSection state={state} locale={locale} />
+      <LearningSection state={state} locale={locale} />
+      <PrivacySection state={state} locale={locale} />
+      <RoutingSection state={state} locale={locale} />
+      <HermesSection state={state} locale={locale} />
       <McpSection state={state} locale={locale} />
       <CompletionSection state={state} locale={locale} />
       <IndexSection state={state} locale={locale} />
@@ -143,7 +167,7 @@ function TestLine({ state, locale }: { state: ViewState; locale: Locale }) {
 function ApprovalLine({ state, locale }: { state: ViewState; locale: Locale }) {
   switch (state.terminalApproval) {
     case "active":
-      return <div className="approval-line ok">✓ {t(locale, "approval.active")}</div>;
+      return <div className="approval-line ok">✓ {t(locale, state.asksEveryCommand === false ? "approval.guardOnly" : "approval.active")}</div>;
     case "unavailable":
       return <div className="approval-line warn">{t(locale, "approval.unavailable")}</div>;
     case "needsConsent":
@@ -186,18 +210,66 @@ function HermesProfile({ state, locale, isActive }: { state: ViewState; locale: 
   );
 }
 
-function CustomProfileForm({ profile, locale, state, onSaved }: { profile?: ProfileView; locale: Locale; state: ViewState; onSaved(): void }) {
-  const [name, setName] = useState(profile?.name ?? "");
-  const [baseUrl, setBaseUrl] = useState(profile?.baseUrl ?? "");
+function CustomProfileForm({ profile, draft, locale, state, onSaved }: { profile?: ProfileView; draft?: PresetDraft; locale: Locale; state: ViewState; onSaved(): void }) {
+  const [name, setName] = useState(profile?.name ?? draft?.name ?? "");
+  const [baseUrl, setBaseUrl] = useState(profile?.baseUrl ?? draft?.baseUrl ?? "");
   const [model, setModel] = useState(profile?.model ?? "");
   const [apiKey, setApiKey] = useState("");
   const [removeKey, setRemoveKey] = useState(false);
   const [contextLength, setContextLength] = useState(profile?.contextLength ?? 0);
+  const [presetId, setPresetId] = useState(draft?.presetId ?? "");
+  const [models, setModels] = useState<{ list: string[]; message?: string; loading?: boolean }>({ list: [] });
   const isActive = profile?.id === state.endpoint.activeProfileId;
+  const preset: EndpointPreset | undefined = ENDPOINT_PRESETS.find((p) => p.id === presetId);
+
+  // The host answers a model-list request for the address the form had when it asked.
+  useEffect(() => {
+    const onMessage = (event: MessageEvent<HostToView>) => {
+      const msg = event.data;
+      if (msg.type === "endpointModels" && msg.baseUrl === baseUrl) {
+        setModels({ list: msg.models, message: msg.error ?? t(locale, "presets.modelsLoaded", msg.models.length) });
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [baseUrl, locale]);
+
+  const choosePreset = (id: string) => {
+    setPresetId(id);
+    const p = ENDPOINT_PRESETS.find((x) => x.id === id);
+    if (!p) return;
+    setName(p.label);
+    setBaseUrl(p.baseUrl);
+    setModels({ list: [] });
+  };
 
   return (
     <>
       <p className="hint">{t(locale, "api.mode.customHint")}</p>
+      {!profile && (
+        <label className="field">
+          <span>{t(locale, "presets.start")}</span>
+          <select value={presetId} onChange={(e) => choosePreset(e.target.value)}>
+            <option value="">{t(locale, "presets.none")}</option>
+            {PRESET_GROUPS.map((group) => (
+              <optgroup key={group} label={t(locale, `presets.group.${group}`)}>
+                {ENDPOINT_PRESETS.filter((p) => p.group === group).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+      )}
+      {preset && (
+        <div className="preset-info">
+          <p className="hint">{preset.note[locale]}</p>
+          {preset.remote && <p className={`hint${state.privacy?.localOnly ? " warn-text" : ""}`}>{t(locale, state.privacy?.localOnly ? "presets.remoteLocal" : "presets.remote")}</p>}
+          {preset.pricingUrl && <p className="hint">{t(locale, "presets.priceNote")}</p>}
+          <div className="row-actions">
+            {preset.helpUrl && <button type="button" className="link-btn" onClick={() => send({ type: "openUrl", url: preset.helpUrl! })}>{t(locale, "presets.help")}</button>}
+            {preset.pricingUrl && <button type="button" className="link-btn" onClick={() => send({ type: "openUrl", url: preset.pricingUrl! })}>{t(locale, "presets.pricing")}</button>}
+          </div>
+        </div>
+      )}
       <label className="field">
         <span>{t(locale, "profiles.name")}</span>
         <input value={name} placeholder="VPS vLLM" onChange={(e) => setName(e.target.value)} />
@@ -228,8 +300,23 @@ function CustomProfileForm({ profile, locale, state, onSaved }: { profile?: Prof
       )}
       <label className="field">
         <span>{t(locale, "api.model")}</span>
-        <input className="mono" value={model} placeholder="model-name" spellCheck={false} onChange={(e) => setModel(e.target.value)} />
+        <input className="mono" value={model} list="endpoint-models" placeholder={preset?.modelHint || draft?.modelHint || t(locale, "presets.modelPlaceholder")} spellCheck={false} onChange={(e) => setModel(e.target.value)} />
+        <datalist id="endpoint-models">{models.list.map((m) => <option key={m} value={m} />)}</datalist>
       </label>
+      <div className="row-actions">
+        <button
+          type="button"
+          className="secondary small"
+          disabled={!baseUrl.trim() || models.loading}
+          onClick={() => {
+            setModels({ list: [], loading: true, message: t(locale, "presets.fetching") });
+            send({ type: "listModels", baseUrl, apiKey: apiKey || undefined, profileId: profile?.id });
+          }}
+        >
+          {t(locale, "presets.listModels")}
+        </button>
+        {models.message && <span className="hint">{models.message}</span>}
+      </div>
       <label className="field">
         <span>
           {t(locale, "api.context")} <em>{t(locale, "api.contextHint")}</em>
@@ -266,6 +353,167 @@ function CustomProfileForm({ profile, locale, state, onSaved }: { profile?: Prof
         )}
       </div>
     </>
+  );
+}
+
+/** Panel language and the language the agent answers in (phase 7): Indonesian by default, each can be changed apart. */
+function LanguageSection({ state, locale }: { state: ViewState; locale: Locale }) {
+  const lang = state.language;
+  if (!lang) return null;
+  return (
+    <details className="language">
+      <summary>{t(locale, "lang.title")}</summary>
+      <p className="hint">{t(locale, "lang.hint")}</p>
+      <label className="field">
+        <span>{t(locale, "lang.ui")}</span>
+        <select value={lang.ui} onChange={(e) => send({ type: "setLanguage", ui: e.target.value as typeof lang.ui })}>
+          <option value="id">{t(locale, "lang.id")}</option>
+          <option value="en">{t(locale, "lang.en")}</option>
+          <option value="auto">{t(locale, "lang.auto")}</option>
+        </select>
+      </label>
+      <label className="field">
+        <span>{t(locale, "lang.agent")}</span>
+        <select value={lang.agent} onChange={(e) => send({ type: "setLanguage", agent: e.target.value as typeof lang.agent })}>
+          <option value="ui">{t(locale, "lang.agentUi")}</option>
+          <option value="id">{t(locale, "lang.id")}</option>
+          <option value="en">{t(locale, "lang.en")}</option>
+          <option value="off">{t(locale, "lang.agentOff")}</option>
+        </select>
+      </label>
+    </details>
+  );
+}
+
+/** Learning mode (phase 7): on or off for this workspace, and how deep the explanations go. */
+function LearningSection({ state, locale }: { state: ViewState; locale: Locale }) {
+  const learning = state.learning;
+  if (!learning) return null;
+  return (
+    <details className="learning" open={learning.on || undefined}>
+      <summary>
+        {t(locale, "learning.title")} <span className="muted">{learning.on ? "· 🎓" : ""}</span>
+      </summary>
+      <p className="hint">{t(locale, "learning.hint")}</p>
+      <label className="check">
+        <input type="checkbox" checked={learning.on} onChange={(e) => send({ type: "setLearning", on: e.target.checked })} />
+        {t(locale, "learning.enable")}
+      </label>
+      <label className="field">
+        <span>{t(locale, "learning.level")}</span>
+        <select value={learning.level} onChange={(e) => send({ type: "setLearning", level: e.target.value as typeof learning.level })}>
+          <option value="beginner">{t(locale, "learning.beginner")}</option>
+          <option value="intermediate">{t(locale, "learning.intermediate")}</option>
+        </select>
+      </label>
+    </details>
+  );
+}
+
+/** Full local mode (phase 6): the switch, the list of the user's own servers, and the privacy check. */
+function PrivacySection({ state, locale }: { state: ViewState; locale: Locale }) {
+  const p = state.privacy;
+  const [hosts, setHosts] = useState((p?.allowedHosts ?? []).join("\n"));
+  useEffect(() => setHosts((p?.allowedHosts ?? []).join("\n")), [p?.allowedHosts]);
+  const dirty = hosts.split(/\s+/).filter(Boolean).join("\n") !== (p?.allowedHosts ?? []).join("\n");
+  return (
+    <details className="privacy" open={p?.localOnly || undefined}>
+      <summary>
+        {t(locale, "privacy.settings.title")} <span className="muted">{p?.localOnly ? "· 🔒" : ""}</span>
+      </summary>
+      <p className="hint">{t(locale, "privacy.settings.hint")}</p>
+      <label className="check">
+        <input type="checkbox" checked={!!p?.localOnly} onChange={(e) => send({ type: "setLocalOnly", enabled: e.target.checked })} />
+        {t(locale, "privacy.settings.enable")}
+      </label>
+      <label className="field">
+        <span>{t(locale, "privacy.settings.hosts")}</span>
+        <textarea className="mono" rows={3} value={hosts} spellCheck={false} placeholder="vps.example.com" onChange={(e) => setHosts(e.target.value)} />
+      </label>
+      <div className="row-actions">
+        <button type="button" className="secondary small" disabled={!dirty} onClick={() => send({ type: "saveAllowedHosts", hosts: hosts.split(/\s+/).filter(Boolean) })}>
+          {t(locale, "privacy.settings.save")}
+        </button>
+        <button type="button" className="secondary small" onClick={() => send({ type: "showPrivacy" })}>
+          {t(locale, "privacy.report")}
+        </button>
+      </div>
+    </details>
+  );
+}
+
+/** Automatic model routing (phase 6): which model answers light questions, which one heavy work, and who is the fallback. */
+function RoutingSection({ state, locale }: { state: ViewState; locale: Locale }) {
+  const saved = state.routing;
+  const [draft, setDraft] = useState<RoutingView | undefined>(saved);
+  useEffect(() => setDraft(saved), [saved]);
+  if (!saved || !draft) return null;
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const choose = (field: "lightModel" | "heavyModel" | "fallbackModel", label: StringKey) => {
+    const known = state.models.some((m) => m.id === draft[field]);
+    return (
+      <label className="field">
+        <span>{t(locale, label)}</span>
+        <select value={draft[field]} onChange={(e) => setDraft({ ...draft, [field]: e.target.value })}>
+          <option value="">{t(locale, "routing.none")}</option>
+          {draft[field] && !known && <option value={draft[field]}>{draft[field]}</option>}
+          {state.models.filter((m) => !m.blocked).map((m) => (
+            <option key={m.id} value={m.id}>{m.group ? `${m.group} · ${m.label}` : m.label}</option>
+          ))}
+        </select>
+      </label>
+    );
+  };
+  return (
+    <details className="routing" open={saved.enabled || undefined}>
+      <summary>
+        {t(locale, "routing.title")} <span className="muted">{saved.enabled ? "· ⇄" : ""}</span>
+      </summary>
+      <p className="hint">{t(locale, "routing.hint")}</p>
+      <label className="check">
+        <input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
+        {t(locale, "routing.enable")}
+      </label>
+      {state.models.length === 0 && <p className="hint">{t(locale, "routing.needModels")}</p>}
+      {choose("lightModel", "routing.light")}
+      {choose("heavyModel", "routing.heavy")}
+      {choose("fallbackModel", "routing.fallback")}
+      <label className="field">
+        <span>{t(locale, "routing.maxChars")}</span>
+        <input type="number" min={20} max={4000} value={draft.lightMaxChars} onChange={(e) => setDraft({ ...draft, lightMaxChars: Number(e.target.value) || saved.lightMaxChars })} />
+      </label>
+      <div className="row-actions">
+        <button type="button" className="secondary small" disabled={!dirty} onClick={() => send({ type: "saveRouting", routing: draft })}>
+          {t(locale, "routing.save")}
+        </button>
+      </div>
+    </details>
+  );
+}
+
+/** Installed Hermes version against the tested range, with the guarded update flow. */
+function HermesSection({ state, locale }: { state: ViewState; locale: Locale }) {
+  const range = `>=${SUPPORTED_HERMES.min} <${SUPPORTED_HERMES.maxExclusive}`;
+  const version = state.hermesVersion;
+  const working = state.hermesUpdate === "checking" || state.hermesUpdate === "updating";
+  return (
+    <details className="hermes-maint">
+      <summary>{t(locale, "hermesMaint.section")}</summary>
+      {version && state.hermesStatus && (
+        <p className={`hint ${state.hermesStatus === "tested" ? "" : "warn-text"}`}>{t(locale, `hermesMaint.status.${state.hermesStatus}` as StringKey, version, range)}</p>
+      )}
+      {state.hermesUpdate && <p className="hint">{t(locale, `hermesMaint.state.${state.hermesUpdate}` as StringKey)}</p>}
+      <div className="row-actions">
+        <button type="button" className="secondary small" disabled={working || state.busy || !version} onClick={() => send({ type: "checkHermesUpdate" })}>
+          {t(locale, "hermesMaint.checkBtn")}
+        </button>
+        {state.hermesUpdate === "available" && (
+          <button type="button" className="primary small" disabled={working || state.busy} onClick={() => send({ type: "updateHermes" })}>
+            {t(locale, "hermesMaint.updateBtn")}
+          </button>
+        )}
+      </div>
+    </details>
   );
 }
 

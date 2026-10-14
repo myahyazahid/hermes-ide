@@ -34,6 +34,7 @@ export function decodeFile(filePath: string, bytes: Uint8Array, size = bytes.len
 
 export function contextLabel(ref: ContextRef, cwd?: string): string {
   if (ref.kind === "codebase") return "codebase";
+  if (ref.kind === "image") return ref.width && ref.height ? `${ref.path} ${ref.width}×${ref.height}` : ref.path;
   const rel = cwd ? relative(cwd, ref.path) : ref.path;
   if (ref.kind === "selection" && ref.startLine) {
     return `${path.basename(ref.path)} · ${ref.startLine}${ref.endLine && ref.endLine !== ref.startLine ? `-${ref.endLine}` : ""}`;
@@ -61,6 +62,12 @@ export function buildPromptBlocks(
   for (const ref of dedupeContext(refs)) {
     // @codebase is expanded into search hits by the host before this point.
     if (ref.kind === "codebase") continue;
+    if (ref.kind === "image") {
+      if (!ref.data || !ref.mimeType) continue;
+      blocks.push({ type: "text", text: `[Pasted image: ${ref.path}${ref.width && ref.height ? ` (${ref.width}×${ref.height})` : ""}]` });
+      blocks.push({ type: "image", data: ref.data, mimeType: ref.mimeType });
+      continue;
+    }
     const uri = pathToFileURL(ref.path).href;
     const shown = opts.cwd ? relative(opts.cwd, ref.path) : ref.path;
     if (ref.kind === "file") {

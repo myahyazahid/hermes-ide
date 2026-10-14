@@ -3,3 +3,5 @@ dist/
 *.vsix
 .vscode-test/
 dist-test/
+ide/.cache/
+ide/out/

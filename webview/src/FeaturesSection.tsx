@@ -77,6 +77,7 @@ export function CompletionSection({ state, locale }: { state: ViewState; locale:
         </span>
       </summary>
       <p className="hint">{t(locale, "completion.hint")}</p>
+      {c.blocked && <p className="hint warn-text">🔒 {t(locale, "privacy.featureOff", t(locale, "privacy.area.completion"))}</p>}
       <label className="check">
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
         {t(locale, "completion.enabled")}
@@ -137,6 +138,7 @@ export function IndexSection({ state, locale }: { state: ViewState; locale: Loca
         {t(locale, "index.title")} <span className="muted">· {indexStatusText(ix, locale)}</span>
       </summary>
       <p className="hint">{t(locale, "index.hint")}</p>
+      {ix.blocked && <p className="hint warn-text">🔒 {t(locale, "privacy.featureOff", t(locale, "privacy.area.index"))}</p>}
       {pct !== undefined && (
         <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
           <div style={{ width: `${pct}%` }} />

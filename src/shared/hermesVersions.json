@@ -1,0 +1,8 @@
+{
+  "supported": { "min": "0.21.0", "maxExclusive": "0.22.0" },
+  "tested": { "version": "0.21.4", "commit": "c0d7294769a38c17ceae51d8f7995e66e1dcae27" },
+  "install": {
+    "scriptUrl": "https://hermes-agent.nousresearch.com/install.ps1",
+    "commandTemplate": "& ([scriptblock]::Create((Invoke-RestMethod -Uri '{url}'))) -Commit '{commit}'"
+  }
+}

@@ -85,6 +85,11 @@ try {
   });
   writeFileSync(path.join(os.tmpdir(), "hermes-ide-mock-requests.txt"), summary.join(String.fromCharCode(10)));
   await mock.close();
-  rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+  try {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+  } catch (error) {
+    // Electron can still hold its user-data files for a moment after exit; the temp folder is not worth failing a passing run.
+    console.log(`(could not delete ${tmp}: ${error.code ?? error.message})`);
+  }
 }
 process.exit(code);

@@ -3,6 +3,8 @@ export interface ScriptedReply {
   toolCalls?: { name: string; arguments: object }[];
   delayMs?: number;
   rejectTools?: boolean;
+  /** Only answer the agent whose user message contains this text. */
+  when?: string;
 }
 
 export interface MockRequest {
@@ -20,6 +22,7 @@ export interface OpenAIMock {
   scriptFim(replies: { text: string; delayMs?: number }[]): void;
   fimRequests(): MockRequest[];
   setDefault(reply: ScriptedReply): void;
+  failModel(model: string, status: number): void;
   chatRequests(): MockRequest[];
   close(): Promise<void>;
 }

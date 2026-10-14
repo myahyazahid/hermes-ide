@@ -7,9 +7,10 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { defaultHermesHome } from "../core/endpoint";
 import {
-  HOOK_ENV, HOOK_SCRIPT, HOOK_SCRIPT_NAME, hasApprovalHook, hookCommand, withAllowlistEntry, withApprovalHook,
+  HOOK_ENV, HOOK_SCRIPT, HOOK_SCRIPT_NAME, LOCAL_ONLY_ENV, hasApprovalHook, hookCommand, withAllowlistEntry, withApprovalHook,
   withoutApprovalHook,
 } from "../core/terminalApproval";
+import { privacySettings } from "./privacyGate";
 import type { TerminalApprovalState } from "../shared/protocol";
 import type { AgentLog } from "./agentLog";
 
@@ -24,13 +25,28 @@ export class TerminalApprovalSetup {
     private readonly log: AgentLog,
   ) {}
 
-  private get enabledBySetting(): boolean {
+  /** Whether every terminal command should ask (the original purpose of the hook). */
+  get asksEveryCommand(): boolean {
     return vscode.workspace.getConfiguration("hermes").get<boolean>("terminal.askEveryCommand", true);
   }
 
-  /** Env Hermes needs so the hook knows it runs under the IDE. */
+  /** The hook is needed for either job: asking about commands, and in full local mode blocking network tools. */
+  private get enabledBySetting(): boolean {
+    return this.asksEveryCommand || privacySettings().localOnly;
+  }
+
+  /** Env Hermes needs so the hook knows it runs under the IDE, and which of its two jobs are on. */
   env(state: TerminalApprovalState): Record<string, string> {
-    return state === "active" ? { [HOOK_ENV]: "1" } : {};
+    if (state !== "active") return {};
+    return {
+      ...(this.asksEveryCommand ? { [HOOK_ENV]: "1" } : {}),
+      ...(privacySettings().localOnly ? { [LOCAL_ONLY_ENV]: "1" } : {}),
+    };
+  }
+
+  /** A Node runtime to run the hook exists, so an IDE-owned profile can always get it. */
+  canInstall(): boolean {
+    return this.resolveNode() !== undefined;
   }
 
   /** Prepares an IDE-owned HERMES_HOME: hook in config.yaml and its allowlist entry. */
@@ -58,7 +74,8 @@ export class TerminalApprovalSetup {
       }
       return "active";
     }
-    return this.context.globalState.get<boolean>(DISMISSED_KEY) ? "dismissed" : "needsConsent";
+    // Declining only works while nothing depends on the hook: full local mode cannot do without it.
+    return this.context.globalState.get<boolean>(DISMISSED_KEY) && !privacySettings().localOnly ? "dismissed" : "needsConsent";
   }
 
   /** Called when the user agrees in the panel. */

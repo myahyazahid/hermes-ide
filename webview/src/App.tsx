@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import type { ContextRef, HostToView, MentionItem, TranscriptItem, ViewState } from "../../src/shared/protocol";
+import type { ContextRef, HostToView, MentionItem, SessionView, TranscriptItem, ViewState } from "../../src/shared/protocol";
 import { t, type Locale, type StringKey } from "../../src/shared/strings";
 import { Composer } from "./Composer";
+import { Onboarding, showsOnboarding } from "./Onboarding";
 import { send } from "./host";
-import { SettingsCard } from "./SettingsCard";
+import { SessionBar } from "./Sessions";
+import { SettingsCard, type PresetDraft } from "./SettingsCard";
+import { StackBanner, ToolsCard } from "./ToolsCard";
 import { Transcript } from "./Transcript";
 
 export function App() {
@@ -11,8 +14,11 @@ export function App() {
   const [state, setState] = useState<ViewState | undefined>();
   const [items, setItems] = useState<TranscriptItem[]>([]);
   const [endpointOpen, setEndpointOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [endpointDraft, setEndpointDraft] = useState<PresetDraft>();
   const [chips, setChips] = useState<ContextRef[]>([]);
   const [mention, setMention] = useState<{ requestId: number; items: MentionItem[] }>();
+  const [sessions, setSessions] = useState<{ requestId: number; sessions: SessionView[] }>();
   const composer = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -45,8 +51,14 @@ export function App() {
           );
           composer.current?.focus();
           break;
+        case "insertPrompt":
+          window.dispatchEvent(new CustomEvent("hermes:insert", { detail: msg.text }));
+          break;
         case "mentionResults":
           setMention({ requestId: msg.requestId, items: msg.items });
+          break;
+        case "sessions":
+          setSessions({ requestId: msg.requestId, sessions: msg.sessions });
           break;
       }
     };
@@ -62,14 +74,31 @@ export function App() {
 
   if (!state) return <div className="loading">Hermes…</div>;
 
+  // The quick-start card says what the "missing" and "needs setup" banners say, with the actions beside it.
+  const onboarding = showsOnboarding(state, items.length);
+
   return (
     <div className="app">
-      <Header state={state} locale={locale} onSettings={() => setEndpointOpen((o) => !o)} />
-      <Banner state={state} locale={locale} />
+      <Header state={state} locale={locale} onSettings={() => setEndpointOpen((o) => !o)} onTools={() => setToolsOpen((o) => !o)} toolsOpen={toolsOpen} />
+      <SessionBar state={state} locale={locale} items={items} sessions={sessions} />
+      <Banner state={state} locale={locale} quiet={onboarding} />
       <ApprovalBanner state={state} locale={locale} />
-      <SettingsCard state={state} locale={locale} open={endpointOpen} onOpenChange={setEndpointOpen} />
+      <PrivacyBanner state={state} locale={locale} onSettings={() => setEndpointOpen(true)} />
+      {!onboarding && <StackBanner state={state} locale={locale} />}
+      {endpointOpen && <SettingsCard state={state} locale={locale} open onOpenChange={(o) => { setEndpointOpen(o); if (!o) setEndpointDraft(undefined); }} draft={endpointDraft} />}
+      {toolsOpen && <ToolsCard state={state} locale={locale} />}
+      {onboarding && (
+        <Onboarding
+          state={state}
+          locale={locale}
+          onPreset={(p) => {
+            setEndpointDraft({ key: Date.now(), name: p.label, baseUrl: p.baseUrl, modelHint: p.modelHint, presetId: p.id });
+            setEndpointOpen(true);
+          }}
+        />
+      )}
       <Transcript items={items} locale={locale} cwd={state.cwd} busy={state.busy} />
-      <Composer state={state} locale={locale} inputRef={composer} chips={chips} setChips={setChips} mention={mention} />
+      <Composer state={state} locale={locale} inputRef={composer} chips={chips} setChips={setChips} mention={mention} onOpenSettings={() => setEndpointOpen(true)} />
     </div>
   );
 }
@@ -94,7 +123,7 @@ function statusKey(state: ViewState): StringKey {
   return `status.${state.phase}` as StringKey;
 }
 
-function Header({ state, locale, onSettings }: { state: ViewState; locale: Locale; onSettings(): void }) {
+function Header({ state, locale, onSettings, onTools, toolsOpen }: { state: ViewState; locale: Locale; onSettings(): void; onTools(): void; toolsOpen: boolean }) {
   return (
     <header className="header">
       <span className="logo" aria-hidden>✦</span>
@@ -104,8 +133,8 @@ function Header({ state, locale, onSettings }: { state: ViewState; locale: Local
         {t(locale, statusKey(state))}
       </span>
       <span className="spacer" />
-      <button type="button" className="icon" title={t(locale, "action.newSession")} aria-label={t(locale, "action.newSession")} onClick={() => send({ type: "newSession" })}>
-        +
+      <button type="button" className={`icon${toolsOpen ? " active" : ""}`} title={t(locale, "tools.open")} aria-label={t(locale, "tools.open")} aria-pressed={toolsOpen} onClick={onTools}>
+        🧰
       </button>
       <button type="button" className="icon" title={t(locale, "action.settings")} aria-label={t(locale, "action.settings")} onClick={onSettings}>
         ⚙
@@ -114,16 +143,22 @@ function Header({ state, locale, onSettings }: { state: ViewState; locale: Local
   );
 }
 
-function Banner({ state, locale }: { state: ViewState; locale: Locale }) {
+function Banner({ state, locale, quiet }: { state: ViewState; locale: Locale; quiet: boolean }) {
   const version = state.versionWarning ? <div className="banner warn">{state.versionWarning}</div> : null;
   const detail = state.phaseDetail ? <div className="banner-detail mono">{state.phaseDetail}</div> : null;
+  if (quiet && (state.phase === "missing" || state.phase === "needsSetup")) return version;
   switch (state.phase) {
     case "missing":
       return (
         <div className="banner warn">
           <p>{t(locale, "banner.missing")}</p>
           <p className="mono small">{t(locale, "banner.missingInstall")}</p>
-          <button type="button" className="secondary" onClick={() => send({ type: "recheck" })}>{t(locale, "action.recheck")}</button>
+          <div className="row-actions">
+            {state.canInstallHermes && !state.onboarding && (
+              <button type="button" className="primary" onClick={() => send({ type: "installHermes" })}>{t(locale, "hermesMaint.install")}</button>
+            )}
+            <button type="button" className="secondary" onClick={() => send({ type: "recheck" })}>{t(locale, "action.recheck")}</button>
+          </div>
         </div>
       );
     case "untrusted":
@@ -156,6 +191,26 @@ function Banner({ state, locale }: { state: ViewState; locale: Locale }) {
     default:
       return version;
   }
+}
+
+/** Full local mode (phase 6): why the agent is held back, and the ways out. */
+function PrivacyBanner({ state, locale, onSettings }: { state: ViewState; locale: Locale; onSettings(): void }) {
+  const p = state.privacy;
+  if (!p?.localOnly || !p.blocked) return null;
+  return (
+    <div className="banner warn" role="region" aria-label={t(locale, "privacy.settings.title")}>
+      <p className="banner-title">🔒 {t(locale, "privacy.blocked", p.blocked)}</p>
+      <p>{p.needsGuard ? t(locale, "privacy.guardNeeded") : t(locale, "privacy.blockedFix")}</p>
+      <div className="row-actions">
+        {p.needsGuard && (
+          <button type="button" className="primary" onClick={() => send({ type: "enableTerminalApproval" })}>{t(locale, "privacy.enableGuard")}</button>
+        )}
+        <button type="button" className="secondary" onClick={() => send({ type: "setLocalOnly", enabled: false })}>{t(locale, "privacy.turnOff")}</button>
+        <button type="button" className="ghost" onClick={onSettings}>{t(locale, "action.settings")}</button>
+        <button type="button" className="ghost" onClick={() => send({ type: "showPrivacy" })}>{t(locale, "privacy.report")}</button>
+      </div>
+    </div>
+  );
 }
 
 /** User story 4: one-time consent to add the approval hook to the user's own Hermes config. */

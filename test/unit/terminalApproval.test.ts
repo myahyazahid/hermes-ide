@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
-  HOOK_ENV, HOOK_SCRIPT, hasApprovalHook, hookCommand, parseHookDescription, withAllowlistEntry, withApprovalHook,
+  HOOK_ENV, HOOK_MATCHER, HOOK_SCRIPT, hasApprovalHook, hookCommand, parseHookDescription, withAllowlistEntry, withApprovalHook,
   withoutApprovalHook,
 } from "../../src/core/terminalApproval";
 
@@ -30,7 +30,8 @@ describe("withApprovalHook", () => {
     expect(out).toContain("# Hermes Agent CLI Configuration");
     const parsed = parse(out);
     expect(parsed.approvals.mode).toBe("manual");
-    expect(parsed.hooks.pre_tool_call).toEqual([{ matcher: "terminal|execute_code", command: CMD, timeout: 30, fail_closed: true }]);
+    expect(parsed.hooks.pre_tool_call).toEqual([{ matcher: HOOK_MATCHER, command: CMD, timeout: 30, fail_closed: true }]);
+    expect(HOOK_MATCHER).toBe("terminal|execute_code|web_search|web_extract|vision_analyze|browser_.*");
     expect(hasApprovalHook(out)).toBe(true);
   });
 

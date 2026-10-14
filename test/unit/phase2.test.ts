@@ -5,7 +5,7 @@ import { buildPromptBlocks, contextLabel, dedupeContext, fuzzyScore } from "../.
 import { sanitizeMcpServers, splitArgs, toAcpMcpServers, validateMcpServer } from "../../src/core/mcp";
 import { parsePermission } from "../../src/core/permission";
 import { HERMES_PROFILE_ID, migrateLegacyEndpoint, newProfileId, sanitizeProfiles } from "../../src/core/profiles";
-import { relativeTime } from "../../src/core/time";
+import { compactTime, relativeTime } from "../../src/core/time";
 
 const cwd = path.resolve("/ws");
 const file = path.join(cwd, "src", "acpClient.ts");
@@ -28,6 +28,14 @@ describe("context blocks (F-12)", () => {
     expect(sel.resource.text).toContain("lines 9-14:\nconst x = 1;");
     expect((blocks[2] as { resource: { text: string } }).resource.text).toContain("- settings.ts");
     expect(blocks[3]).toEqual({ type: "text", text: "ubah start()" });
+  });
+
+  it("sends pasted images as image blocks", () => {
+    const img = { kind: "image" as const, path: "image.png", data: "iVBOR", mimeType: "image/png", width: 547, height: 690 };
+    const blocks = buildPromptBlocks("what is this?", [img, { ...img, path: "image (2).png" }]);
+    expect(blocks.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text"]);
+    expect(blocks[1]).toEqual({ type: "image", data: "iVBOR", mimeType: "image/png" });
+    expect(contextLabel(img)).toBe("image.png 547×690");
   });
 
   it("labels and dedupes references", () => {
@@ -124,5 +132,12 @@ describe("relativeTime", () => {
     expect(relativeTime(String(now / 1000 - 3 * 3600), "en", now)).toBe("3 hours ago");
     expect(relativeTime("2026-10-08T10:00:00Z", "id", now)).toBe("kemarin");
     expect(relativeTime(undefined, "en", now)).toBe("");
+  });
+  it("gives compact ages for the history popover", () => {
+    expect(compactTime(now - 20_000, "en", now)).toBe("now");
+    expect(compactTime(now - 5 * 60_000, "en", now)).toBe("5m");
+    expect(compactTime(now - 3 * 3600_000, "id", now)).toBe("3j");
+    expect(compactTime(now - 2 * 86400_000, "en", now)).toBe("2d");
+    expect(compactTime(undefined, "en", now)).toBe("");
   });
 });

@@ -1,0 +1,41 @@
+{
+  "name": "Hermes IDE",
+  "applicationName": "hermes-ide",
+  "dataFolderName": ".hermes-ide",
+  "mutexName": "hermeside",
+  "regValueName": "HermesIDE",
+  "appUserModelId": "Yahya.HermesIDE",
+  "urlProtocol": "hermes-ide",
+  "publisher": "Muhammad Yahya Zahid",
+  "repository": "https://github.com/myahyazahid/hermes-ide",
+  "appIds": {
+    "x64": "{{2C9F7259-485D-4192-B046-EFA3E78DEEC6}",
+    "arm64": "{{13981678-20E0-4598-B50A-20E20CA7192C}"
+  },
+  "update": {
+    "feedUrl": "https://github.com/myahyazahid/hermes-ide/releases/latest/download/latest.json",
+    "downloadBase": "https://github.com/myahyazahid/hermes-ide/releases/download"
+  },
+  "base": {
+    "name": "VSCodium",
+    "version": "1.135.06055",
+    "downloadBase": "https://github.com/VSCodium/vscodium/releases/download",
+    "assets": {
+      "x64": {
+        "file": "VSCodium-win32-x64-1.135.06055.zip",
+        "sha256": "0bec978f201238624bc9ad43966f5e201ed8afacc37d77035a822252d9c9c200"
+      },
+      "arm64": {
+        "file": "VSCodium-win32-arm64-1.135.06055.zip",
+        "sha256": "079aafaf0a141abd3a0b2078eca0a86b502cee38089014b81415ebb8e3675f21"
+      }
+    }
+  },
+  "extensionDir": "hermes-ide",
+  "configurationDefaults": {
+    "update.mode": "none",
+    "telemetry.telemetryLevel": "off",
+    "chat.disableAIFeatures": true,
+    "workbench.startupEditor": "none"
+  }
+}

@@ -1,11 +1,18 @@
 // Runs inside a real VS Code extension host (launched by runTest.mjs). Drives the extension the
 // way the panel does, against the real `hermes acp` and the scripted OpenAI mock.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { HermesIdeApi } from "../../src/extension";
 import type { TranscriptItem } from "../../src/shared/protocol";
+import type { AgentLog } from "../../src/vscode/agentLog";
+import { HermesMaintenance, type MaintenanceHost } from "../../src/vscode/hermesMaintenance";
+import { IdeUpdater } from "../../src/vscode/ideUpdater";
 
 const MOCK = process.env.HERMES_IT_MOCK_URL!;
 const CONTROL = MOCK.replace(/\/v1$/, "");
@@ -395,6 +402,670 @@ export async function run(): Promise<void> {
       equal(top[0]?.path, "src/session.ts", `new file searchable; top=${JSON.stringify(top.map((h) => [h.path, h.score.toFixed(3), h.text.slice(0, 40)]))}`);
     }],
 
+    ["the IDE updater is inert in plain VS Code and, as the standalone IDE, downloads, verifies and hands over to the installer (phase 4)", async () => {
+      ok(!api.updater.standalone, "plain VS Code must not look like the standalone IDE");
+      ok((await vscode.commands.getCommands(true)).includes("hermes.update.check"), "update command registered");
+
+      const payload = Buffer.from("MZ pretend installer ".repeat(2000));
+      const sha256 = createHash("sha256").update(payload).digest("hex");
+      let feedVersion = "0.5.0";
+      const server = createServer((req, res) => {
+        if (req.url === "/latest.json") {
+          res.end(JSON.stringify({
+            schema: 1, version: feedVersion, releasedAt: "", notes: "",
+            installers: { "win32-x64": { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/setup.exe`, sha256, size: payload.length } },
+          }));
+        } else res.end(payload);
+      });
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+      const feedUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/latest.json`;
+
+      const shown: string[] = [];
+      let pick: RegExp = /Update/;
+      const win = vscode.window as unknown as Record<string, unknown>;
+      const original = { info: win.showInformationMessage, warn: win.showWarningMessage };
+      win.showInformationMessage = async (message: string, ...buttons: string[]) => {
+        shown.push(message);
+        return buttons.find((b) => typeof b === "string" && pick.test(b));
+      };
+      // Unsaved files from earlier tests would raise a modal "save first" prompt; accept it.
+      win.showWarningMessage = async (_message: string, ...rest: unknown[]) => rest.filter((r) => typeof r === "string").at(-1);
+
+      const store = new Map<string, unknown>();
+      const context = { globalState: { get: (k: string) => store.get(k), update: async (k: string, v: unknown) => void store.set(k, v) } } as unknown as vscode.ExtensionContext;
+      let launched: { file: string; args: string[] } | undefined;
+      let quit = false;
+      const updater = new IdeUpdater(context, { info: () => {} } as unknown as AgentLog, () => "en", {
+        info: { version: "0.4.0", arch: "x64", updateFeedUrl: feedUrl },
+        launchInstaller: async (file, args) => void (launched = { file, args }),
+        quit: async () => void (quit = true),
+        downloadDir: mkdtempSync(path.join(tmpdir(), "hermes-update-it-")),
+      });
+      try {
+        ok(updater.standalone, "info override makes the updater standalone");
+        equal((await updater.checkNow(true))?.version, "0.5.0", "newer release found");
+        const handover = await waitFor(() => launched, "installer launched");
+        ok(readFileSync(handover.file).equals(payload), "downloaded installer is byte-identical");
+        ok(handover.args.includes("/VERYSILENT") && handover.args.includes("/UPDATE=1"), `installer args ${handover.args}`);
+        await waitFor(() => quit, "IDE asked to quit after the hand-over");
+        ok(shown[0]?.includes("0.5.0"), `prompt mentions the new version: ${shown[0]}`);
+
+        feedVersion = "0.4.0";
+        shown.length = 0;
+        equal(await updater.checkNow(true), undefined, "no update when current");
+        ok(shown.some((m) => m.includes("up to date")), `up-to-date notice: ${shown}`);
+
+        feedVersion = "0.6.0";
+        pick = /Skip/;
+        await updater.checkNow(true);
+        await waitFor(() => store.get("hermes.update.skippedVersion") === "0.6.0", "skipped version remembered");
+        shown.length = 0;
+        await updater.checkNow(false);
+        await sleep(300);
+        equal(shown.length, 0, "a skipped version is not announced again by background checks");
+      } finally {
+        Object.assign(win, { showInformationMessage: original.info, showWarningMessage: original.warn });
+        server.close();
+        updater.dispose();
+      }
+    }],
+
+    // ---- Phase 5 ------------------------------------------------------------------------
+
+    ["phase 5 rules: .hermes/rules.md reaches the model once per change, with a visible chip and a clean bubble", async () => {
+      const dir = path.join(ws, ".hermes");
+      const rulesFile = path.join(dir, "rules.md");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(rulesFile, "Always answer like a pirate. RULE_MARKER_ONE\n");
+      await waitFor(() => svc.state.rules?.files.includes(".hermes/rules.md"), "rules detected by the watcher");
+      await svc.handleViewMessage({ type: "newSession" }); // a fresh session, so the rules count as new
+      const rulesBlocks = async () => {
+        const users = JSON.stringify((await agentRequests()).at(-1).messages.filter((m: any) => m.role === "user"));
+        return { users, count: users.split("<project-rules").length - 1 };
+      };
+
+      await script([{ text: "Arr." }]);
+      await svc.handleViewMessage({ type: "send", text: "halo rules" });
+      let seen = await rulesBlocks();
+      ok(seen.users.includes("RULE_MARKER_ONE"), "rules sent with the first prompt");
+      const first = items().filter((i) => i.kind === "user").at(-1) as Extract<TranscriptItem, { kind: "user" }>;
+      ok(first.context?.some((c) => c.kind === "rules" && c.label === ".hermes/rules.md"), "rules chip on the user message");
+      equal(first.text, "halo rules", "the bubble shows only what the user typed");
+
+      await script([{ text: "Arr lagi." }]);
+      await svc.handleViewMessage({ type: "send", text: "lagi" });
+      equal((await rulesBlocks()).count, 1, "unchanged rules are not sent again");
+
+      writeFileSync(rulesFile, "Now speak like a robot. RULE_MARKER_TWO\n");
+      await sleep(600); // let the watcher notice; the prompt reads the file fresh anyway
+      await script([{ text: "Beep." }]);
+      await svc.handleViewMessage({ type: "send", text: "ketiga" });
+      seen = await rulesBlocks();
+      equal(seen.count, 2, "changed rules are sent again");
+      ok(seen.users.includes("RULE_MARKER_TWO"), "new rules text");
+
+      rmSync(rulesFile);
+      await script([{ text: "Oke." }]);
+      await svc.handleViewMessage({ type: "send", text: "keempat" });
+      ok((await rulesBlocks()).users.includes("no longer apply"), "removal is announced");
+      rmSync(dir, { recursive: true, force: true });
+      await waitFor(() => !svc.state.rules, "rules cleared from the view state");
+    }],
+
+    ["phase 5 usage: Hermes' token counts are recorded per session and priced only from the user's own prices", async () => {
+      await svc.handleViewMessage({ type: "newSession" });
+      equal(svc.state.sessionUsage, undefined, "no usage in a new session");
+      await script([{ text: "Satu." }]);
+      await svc.handleViewMessage({ type: "send", text: "hitung 1" });
+      const one = svc.state.sessionUsage;
+      ok(one && one.turns === 1 && one.input > 0 && one.output > 0, "usage after one turn: " + JSON.stringify(one));
+      equal(one!.cost, undefined, "no price configured, so no cost is guessed");
+
+      await vscode.workspace.getConfiguration("hermes").update("pricing", { "mock-model": { input: 1000, output: 2000 } }, vscode.ConfigurationTarget.Global);
+      await waitFor(() => svc.state.sessionUsage?.cost !== undefined, "cost appears once a price exists");
+      const priced = svc.state.sessionUsage!;
+      ok(Math.abs(priced.cost! - (priced.input * 1000 + priced.output * 2000) / 1e6) < 1e-9, "cost = tokens x price: " + JSON.stringify(priced));
+
+      await script([{ text: "Dua." }]);
+      await svc.handleViewMessage({ type: "send", text: "hitung 2" });
+      ok(svc.state.sessionUsage!.turns === 2 && svc.state.sessionUsage!.input > priced.input, "second turn adds up");
+
+      await svc.showUsage();
+      const report = vscode.window.activeTextEditor?.document.getText() ?? "";
+      ok(report.includes("Token and cost usage") && report.includes("mock-model"), "report document opened: " + report.slice(0, 200));
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      await vscode.workspace.getConfiguration("hermes").update("pricing", undefined, vscode.ConfigurationTarget.Global);
+    }],
+
+    ["phase 5 checkpoints: 'Restore to here' puts agent edits back (reviewed and automatic), and can be undone", async () => {
+      await svc.handleViewMessage({ type: "newSession" });
+      const win = vscode.window as unknown as Record<string, unknown>;
+      const original = { warn: win.showWarningMessage, info: win.showInformationMessage };
+      win.showWarningMessage = async (_m: string, ...rest: unknown[]) => rest.filter((r) => typeof r === "string").at(-1);
+      win.showInformationMessage = async () => undefined;
+      const lastUser = () => items().filter((i) => i.kind === "user").at(-1) as Extract<TranscriptItem, { kind: "user" }>;
+      const f = path.join(ws, "cp.txt");
+      const g = path.join(ws, "cp-new.txt");
+      rmSync(g, { force: true });
+      try {
+        writeFileSync(f, "ORIGINAL\n");
+        // Hermes will not overwrite a file the agent has not read, so read it first like a real model.
+        await script([
+          { toolCalls: [{ name: "read_file", arguments: { path: f } }] },
+          { toolCalls: [{ name: "write_file", arguments: { path: f, content: "CHANGED\n" } }] },
+          { toolCalls: [{ name: "write_file", arguments: { path: g, content: "BRAND NEW\n" } }] },
+          { text: "Selesai." },
+        ]);
+        const sending = svc.handleViewMessage({ type: "send", text: "ubah cp" });
+        for (let i = 0; i < 2; i++) {
+          await nextReview();
+          await decideReview(true);
+        }
+        await sending;
+        equal(lnf(readFileSync(f, "utf8")), "CHANGED\n", "agent edit applied");
+        ok(existsSync(g), "agent created a file");
+        await waitFor(() => lastUser().restorable === true, "the message offers a restore");
+
+        await svc.restoreCheckpoint(lastUser().turn!);
+        equal(lnf(readFileSync(f, "utf8")), "ORIGINAL\n", "edited file restored");
+        ok(!existsSync(g), "created file removed");
+        equal(svc.state.canUndoRestore, true, "restore can be undone");
+        equal(lastUser().restorable, false, "nothing left to restore");
+
+        await script([{ text: "Dipahami." }]);
+        await svc.handleViewMessage({ type: "send", text: "lanjut" });
+        const users = JSON.stringify((await agentRequests()).at(-1).messages.filter((m: any) => m.role === "user"));
+        ok(users.includes("restored these files"), "the agent is told about the restore");
+
+        await svc.undoRestore();
+        equal(lnf(readFileSync(f, "utf8")), "CHANGED\n", "undo brings the agent's version back");
+        ok(existsSync(g), "undo brings the created file back");
+
+        // The automatic path (edit mode) must snapshot too.
+        await svc.handleViewMessage({ type: "setMode", mode: "acceptEdits" });
+        await script([
+          { toolCalls: [{ name: "read_file", arguments: { path: f } }] },
+          { toolCalls: [{ name: "write_file", arguments: { path: f, content: "AUTO\n" } }] },
+          { text: "Otomatis." },
+        ]);
+        await svc.handleViewMessage({ type: "send", text: "ubah otomatis" });
+        equal(lnf(readFileSync(f, "utf8")), "AUTO\n", "automatic edit applied");
+        await waitFor(() => lastUser().restorable === true, "automatic edit is restorable");
+        await svc.restoreCheckpoint(lastUser().turn!);
+        equal(lnf(readFileSync(f, "utf8")), "CHANGED\n", "automatic edit restored to what it was before");
+      } finally {
+        await svc.handleViewMessage({ type: "setMode", mode: "manual" });
+        Object.assign(win, { showWarningMessage: original.warn, showInformationMessage: original.info });
+        rmSync(f, { force: true });
+        rmSync(g, { force: true });
+      }
+    }],
+
+    ["phase 5 checkpoints: a turn that ran a terminal command is flagged, since a restore cannot undo commands", async () => {
+      await svc.handleViewMessage({ type: "newSession" });
+      const marker = path.join(ws, "flag.txt").replace(/\\/g, "/");
+      const command = `echo flagged > "${marker}"`;
+      await script([{ toolCalls: [{ name: "terminal", arguments: { command } }] }, { text: "Selesai." }]);
+      const sending = svc.handleViewMessage({ type: "send", text: "jalankan flag" });
+      const card = await waitFor(() => permissionItems().find((p) => p.state === "pending" && p.command === command), "command card");
+      await svc.handleViewMessage({ type: "permission", id: card.id, action: "allow_once" });
+      await sending;
+      const user = items().filter((i) => i.kind === "user").at(-1) as Extract<TranscriptItem, { kind: "user" }>;
+      equal(user.ranCommands, true, "the turn is marked as having run commands");
+      rmSync(marker, { force: true });
+    }],
+
+    ["phase 5 notifications: a finished turn and a permission request notify when switched on", async () => {
+      const cfg = vscode.workspace.getConfiguration("hermes.notifications");
+      const target = vscode.ConfigurationTarget.Global;
+      await cfg.update("mode", "always", target);
+      await cfg.update("minSeconds", 0, target);
+      await cfg.update("native", false, target);
+      const win = vscode.window as unknown as Record<string, unknown>;
+      const original = win.showInformationMessage;
+      const shown: string[] = [];
+      win.showInformationMessage = async (message: string) => {
+        shown.push(message);
+        return undefined;
+      };
+      try {
+        await svc.handleViewMessage({ type: "newSession" });
+        await script([{ text: "Beres." }]);
+        await svc.handleViewMessage({ type: "send", text: "kabari saya" });
+        ok(shown.some((m) => m.startsWith("Hermes is done")), "done notification: " + JSON.stringify(shown));
+
+        shown.length = 0;
+        const victim = path.join(ws, "notify-victim");
+        mkdirSync(victim, { recursive: true });
+        const command = `rm -rf "${victim.replace(/\\/g, "/")}"`;
+        await script([{ toolCalls: [{ name: "terminal", arguments: { command } }] }, { text: "Batal." }]);
+        const sending = svc.handleViewMessage({ type: "send", text: "hapus notify-victim" });
+        const card = await waitFor(() => permissionItems().find((p) => p.state === "pending" && p.command === command), "permission card");
+        ok(shown.some((m) => m.startsWith("Hermes needs your permission")), "permission notification: " + JSON.stringify(shown));
+        await svc.handleViewMessage({ type: "permission", id: card.id, action: "reject" });
+        await sending;
+
+        await cfg.update("mode", "off", target);
+        shown.length = 0;
+        await script([{ text: "Diam." }]);
+        await svc.handleViewMessage({ type: "send", text: "tanpa notifikasi" });
+        equal(shown.filter((m) => m.startsWith("Hermes is done")).length, 0, "no notification when switched off");
+      } finally {
+        win.showInformationMessage = original;
+        for (const key of ["mode", "minSeconds", "native"]) await cfg.update(key, undefined, target);
+        rmSync(path.join(ws, "notify-victim"), { recursive: true, force: true });
+      }
+    }],
+
+    ["phase 5 Hermes update: asks first, backs up, stops Hermes during the update, restarts it, and judges the version", async () => {
+      if (process.platform !== "win32") return;
+      const dir = mkdtempSync(path.join(tmpdir(), "hermes-maint-it-"));
+      writeFileSync(path.join(dir, "fake.js"), String.raw`
+const fs = require("fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_OUT, args.join(" ") + "\n");
+if (args[0] === "update" && args[1] === "--check") { console.log("Update available: 5 commits behind origin/main."); process.exit(0); }
+if (args[0] === "update") { console.log("updating"); process.exit(Number(process.env.FAKE_EXIT || 0)); }
+process.exit(2);
+`);
+      const fake = path.join(dir, "fake-hermes.cmd");
+      writeFileSync(fake, "@echo off\r\nnode \"%~dp0fake.js\" %*\r\n");
+      const record = path.join(dir, "calls.txt");
+
+      const calls: string[] = [];
+      const notices: string[] = [];
+      let version = "0.21.4";
+      let exitCode = "0";
+      const host: MaintenanceHost = {
+        locale: () => "en",
+        hermesPath: () => fake,
+        env: () => ({ ...process.env, FAKE_OUT: record, FAKE_EXIT: exitCode }),
+        version: () => version,
+        busy: () => false,
+        stopHermes: async () => void calls.push("stop"),
+        refresh: async () => void calls.push("refresh"),
+        setUpdateStatus: (status) => void calls.push("status:" + status),
+        notice: (_level, text) => void notices.push(text),
+      };
+      const store = new Map<string, unknown>();
+      const context = { globalState: { get: (k: string) => store.get(k), update: async (k: string, v: unknown) => void store.set(k, v) } } as unknown as vscode.ExtensionContext;
+      const maintenance = new HermesMaintenance(context, { info: () => {}, hermes: () => {} } as unknown as AgentLog, host);
+
+      const win = vscode.window as unknown as Record<string, unknown>;
+      const original = { warn: win.showWarningMessage, info: win.showInformationMessage };
+      let answer: string | undefined;
+      win.showWarningMessage = async (_m: string, ...rest: unknown[]) => (answer === "confirm" ? rest.filter((r) => typeof r === "string").at(-1) : undefined);
+      win.showInformationMessage = async () => undefined;
+      try {
+        answer = undefined; // the user declines
+        await maintenance.update();
+        equal(calls, [], "declining runs nothing");
+        ok(!existsSync(record), "Hermes was not called");
+
+        answer = "confirm";
+        version = "0.21.4";
+        await maintenance.update();
+        equal(calls, ["status:updating", "stop", "refresh", "status:current"], "stop before, refresh after");
+        ok(readFileSync(record, "utf8").includes("update --backup --yes"), "full backup and no prompts");
+        ok(notices.at(-1)?.includes("updated to 0.21.4"), "inside the tested range: " + notices.at(-1));
+
+        calls.length = 0;
+        version = "0.23.0"; // what the version check finds after the update
+        await maintenance.update();
+        ok(notices.at(-1)?.includes("outside the tested versions"), "newer than tested is called out: " + notices.at(-1));
+
+        calls.length = 0;
+        exitCode = "1";
+        await maintenance.update();
+        ok(notices.at(-1)?.includes("failed"), "failure reported: " + notices.at(-1));
+        equal(calls.at(-1), "status:unknown", "status after a failed update");
+        ok(calls.includes("refresh"), "Hermes is restarted even after a failed update");
+
+        calls.length = 0;
+        await maintenance.checkUpdate(false);
+        equal(calls, ["status:checking", "status:available"], "background check only reports");
+      } finally {
+        Object.assign(win, { showWarningMessage: original.warn, showInformationMessage: original.info });
+        maintenance.dispose();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }],
+
+    // ---- Phase 6 ------------------------------------------------------------------------
+
+    ["phase 6 local mode: network tools are blocked by the hook, network commands always ask, and a local endpoint keeps working", async () => {
+      const cfg = vscode.workspace.getConfiguration("hermes.privacy");
+      const target = vscode.ConfigurationTarget.Global;
+      try {
+        await cfg.update("localOnly", true, target);
+        await waitFor(() => svc.state.privacy?.localOnly === true, "local mode published");
+        await waitFor(() => svc.state.phase === "ready", "Hermes back after the restart for the new hook flags", 90_000);
+        equal(svc.state.privacy?.blocked, undefined, "a loopback endpoint is allowed");
+        equal(svc.state.terminalApproval, "active", "the hook is installed");
+
+        // 1. a network tool never runs: the hook answers for it and the model is told why.
+        await script([{ toolCalls: [{ name: "web_search", arguments: { query: "pirate speak" } }] }, { text: "Tanpa web." }]);
+        await svc.handleViewMessage({ type: "send", text: "cari di web" });
+        ok((await agentRequests()).length > 0, "the model was reached: phase=" + svc.state.phase + " " + JSON.stringify(items().slice(-4)).slice(0, 600));
+        // The session keeps earlier tool results, so only the newest one is about this call.
+        const lastTool = String((await agentRequests()).at(-1).messages.filter((m: any) => m.role === "tool").at(-1)?.content);
+        ok(lastTool.includes("Full local mode is on"), "the blocked tool call came back with the reason: " + lastTool.slice(0, 400));
+        ok(!items().some((i) => i.kind === "tool" && i.status === "completed"), "the blocked call never ran: " + JSON.stringify(items().slice(-4)).slice(0, 500));
+
+        // 2. a command that reaches the internet asks, even in a mode that would normally run it, and cannot be always-allowed.
+        await svc.handleViewMessage({ type: "setMode", mode: "auto" });
+        const command = "curl https://example.com/health-" + Date.now();
+        await script([{ toolCalls: [{ name: "terminal", arguments: { command } }] }, { text: "Ditolak." }]);
+        const sending = svc.handleViewMessage({ type: "send", text: "cek example.com" });
+        const card = await waitFor(() => permissionItems().find((p) => p.state === "pending" && p.command === command), "card for a network command even in auto mode");
+        ok(card.dangerReason?.includes("Local mode"), "the card says why: " + card.dangerReason);
+        ok(!card.actions.includes("allow_always_ws"), "no always-allow for a network command");
+        await svc.handleViewMessage({ type: "permission", id: card.id, action: "reject" });
+        await sending;
+        await svc.handleViewMessage({ type: "setMode", mode: "manual" });
+
+        // 3. an ordinary local command is untouched.
+        const marker = path.join(ws, "local-ok.txt").replace(/\\/g, "/");
+        const local = "echo ok > \"" + marker + "\"";
+        await script([{ toolCalls: [{ name: "terminal", arguments: { command: local } }] }, { text: "Selesai." }]);
+        const sending2 = svc.handleViewMessage({ type: "send", text: "tulis file lokal" });
+        const localCard = await waitFor(() => permissionItems().find((p) => p.state === "pending" && p.command === local), "card for a local command");
+        ok(!localCard.dangerReason, "a local command is not flagged: " + localCard.dangerReason);
+        await svc.handleViewMessage({ type: "permission", id: localCard.id, action: "allow_once" });
+        await sending2;
+        ok(existsSync(marker), "the local command ran");
+        rmSync(marker, { force: true });
+      } finally {
+        await svc.handleViewMessage({ type: "setMode", mode: "manual" });
+        await cfg.update("localOnly", undefined, target);
+        await waitFor(() => svc.state.privacy?.localOnly === false, "local mode off again");
+        await waitFor(() => svc.state.phase === "ready", "Hermes back after local mode is off", 90_000);
+      }
+    }],
+
+    ["phase 6 local mode: a remote endpoint keeps the agent from starting, and the way back works", async () => {
+      const cfg = vscode.workspace.getConfiguration("hermes.privacy");
+      const target = vscode.ConfigurationTarget.Global;
+      const goodProfile = svc.state.endpoint.activeProfileId;
+      let remoteId: string | undefined;
+      try {
+        await cfg.update("localOnly", true, target);
+        await waitFor(() => svc.state.privacy?.localOnly === true, "local mode published");
+        await svc.handleViewMessage({ type: "saveProfile", profile: { name: "Remote", baseUrl: "https://api.example.com/v1", model: "some-model", contextLength: 0 } });
+        remoteId = svc.state.endpoint.activeProfileId;
+        ok(remoteId !== goodProfile, "the remote profile is active");
+        await waitFor(() => !!svc.state.privacy?.blocked, "the agent is held back");
+        ok(svc.state.privacy!.blocked!.includes("api.example.com"), "the reason names the endpoint: " + svc.state.privacy!.blocked);
+        equal(svc.processId, undefined, "Hermes was not started for a remote endpoint");
+        const before = items().length;
+        await svc.handleViewMessage({ type: "send", text: "ini tidak boleh terkirim" });
+        ok(!items().slice(before).some((i) => i.kind === "user"), "the message was not even added to the chat");
+        ok(items().some((i) => i.kind === "notice" && i.level === "error" && i.text.includes("Full local mode")), "the user is told why");
+
+        // naming the server as one's own lifts the block
+        await cfg.update("allowedHosts", ["api.example.com"], target);
+        await waitFor(() => !svc.state.privacy?.blocked, "an allowed host unblocks");
+        await cfg.update("allowedHosts", undefined, target);
+        await waitFor(() => !!svc.state.privacy?.blocked, "and removing it blocks again");
+      } finally {
+        await svc.selectProfile(goodProfile);
+        if (remoteId && remoteId !== goodProfile) await svc.handleViewMessage({ type: "deleteProfile", id: remoteId });
+        await cfg.update("localOnly", undefined, target);
+        await cfg.update("allowedHosts", undefined, target);
+        await waitFor(() => svc.state.privacy?.localOnly === false, "local mode off again");
+        await waitFor(() => svc.state.phase === "ready", "Hermes ready on the original profile", 90_000);
+      }
+    }],
+
+    ["phase 6 local mode: Tab completion and the index are switched off for remote endpoints, and the privacy check says so", async () => {
+      const completion = vscode.workspace.getConfiguration("hermes.completion");
+      const privacy = vscode.workspace.getConfiguration("hermes.privacy");
+      const target = vscode.ConfigurationTarget.Global;
+      try {
+        await completion.update("enabled", true, target);
+        await completion.update("baseUrl", "https://fim.example.com/v1", target);
+        await completion.update("model", "some-fim", target);
+        equal(api.completion.endpoint()?.baseUrl, "https://fim.example.com/v1", "without local mode a remote FIM endpoint is used");
+        await privacy.update("localOnly", true, target);
+        await waitFor(() => api.completion.endpoint() === undefined, "completion endpoint withheld");
+        equal(api.completion.view().blocked, true, "the view says why");
+
+        await vscode.commands.executeCommand("hermes.privacy.report");
+        const report = vscode.window.activeTextEditor?.document.getText() ?? "";
+        ok(report.includes("Privacy check") && report.includes("Tab autocomplete") && report.includes("fim.example.com"), "report lists the remote completion endpoint: " + report.slice(0, 300));
+        ok(report.includes("Honest limits"), "report states what it cannot guard");
+        await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      } finally {
+        await privacy.update("localOnly", undefined, target);
+        for (const key of ["enabled", "baseUrl", "model"]) await completion.update(key, undefined, target);
+        await waitFor(() => svc.state.privacy?.localOnly === false && svc.state.phase === "ready", "back to normal", 90_000);
+      }
+    }],
+
+    ["phase 6 routing: short questions go to the light model, heavy work to the strong one, a failing model falls back, and a manual pick pauses it", async () => {
+      const cfg = vscode.workspace.getConfiguration("hermes.routing");
+      const target = vscode.ConfigurationTarget.Global;
+      // Hermes lists only the profile's own model; the others the endpoint serves come from its /models.
+      const light = (await waitFor(() => svc.state.models.find((m) => m.id.includes("mock-model-2")), "the endpoint's second model in the picker")).id;
+      const strong = svc.state.models.find((m) => m.id.endsWith(":mock-model"))?.id;
+      ok(strong, "the first model is offered: " + JSON.stringify(svc.state.models.map((m) => m.id)));
+      const sentModel = async () => String((await agentRequests()).at(-1).model);
+      const notices = () => items().filter((i): i is Extract<TranscriptItem, { kind: "notice" }> => i.kind === "notice").map((i) => i.text);
+      try {
+        await svc.newSession();
+        await svc.selectModel(strong!);
+        await cfg.update("lightModel", light, target);
+        await cfg.update("heavyModel", strong, target);
+        await cfg.update("fallbackModel", strong, target);
+        await cfg.update("enabled", true, target);
+        await waitFor(() => svc.state.routing?.enabled === true, "routing published");
+
+        // 1. a short question goes to the light model, and the chat says so
+        await script([{ text: "Closure itu fungsi plus lingkungannya." }]);
+        await svc.handleViewMessage({ type: "send", text: "apa itu closure?" });
+        equal(svc.state.currentModelId, light, "light model selected");
+        equal(await sentModel(), "mock-model-2", "the request went to the light model");
+        ok(notices().some((n) => n.startsWith("Routing:")), "the switch is written in the chat: " + JSON.stringify(notices()));
+
+        // 2. heavy work goes back to the strong model
+        await script([{ text: "Rencana refactor." }]);
+        await svc.handleViewMessage({ type: "send", text: "tolong refactor seluruh modul auth" });
+        equal(svc.state.currentModelId, strong, "strong model selected");
+        equal(await sentModel(), "mock-model", "the request went to the strong model");
+
+        // 3. the light model fails: the same message is retried once with the fallback and the user sees both
+        await fetch(`${CONTROL}/__fail`, { method: "POST", body: JSON.stringify({ "mock-model-2": 401 }) });
+        await script([{ text: "Jawaban dari cadangan." }]);
+        await svc.handleViewMessage({ type: "send", text: "apa itu monad?" });
+        ok(items().some((i) => i.kind === "agent" && i.text.includes("Jawaban dari cadangan.")), "the fallback answered: " + JSON.stringify(items().slice(-6)).slice(0, 700));
+        ok(notices().some((n) => /trying again|mencoba lagi/.test(n)), "the failover is explained: " + JSON.stringify(notices()));
+        equal(svc.state.currentModelId, strong, "the fallback is now the selected model");
+        equal(items().filter((i) => i.kind === "user" && i.text === "apa itu monad?").length, 1, "the question is in the chat once");
+
+        // 4. the failed model is not tried again right away
+        await script([{ text: "Masih cadangan." }]);
+        await svc.handleViewMessage({ type: "send", text: "apa itu tuple?" });
+        equal(await sentModel(), "mock-model", "a model that just failed is skipped");
+        await fetch(`${CONTROL}/__fail`, { method: "POST", body: JSON.stringify({ "mock-model-2": 0 }) });
+
+        // 5. picking a model yourself pauses routing for the session
+        await svc.handleViewMessage({ type: "selectModel", modelId: light! });
+        ok(notices().some((n) => n.includes("paused") || n.includes("dijeda")), "the pause is announced");
+        await script([{ text: "Tetap ringan." }]);
+        await svc.handleViewMessage({ type: "send", text: "tolong refactor seluruh modul pembayaran" });
+        equal(svc.state.currentModelId, light, "routing left the manual pick alone");
+      } finally {
+        await fetch(`${CONTROL}/__fail`, { method: "POST", body: JSON.stringify({ "mock-model-2": 0 }) });
+        for (const key of ["enabled", "lightModel", "heavyModel", "fallbackModel"]) await cfg.update(key, undefined, target);
+        await svc.newSession();
+        if (strong) await svc.selectModel(strong);
+      }
+    }],
+
+    ["phase 6 memory: the panel shows, edits and saves Hermes' memory in Hermes' own format, and a new session reads it", async () => {
+      const got: any[] = [];
+      const sub = svc.attachView((m) => got.push(m));
+      const panelOf = () => [...got].reverse().find((m) => m.type === "memory")?.panel;
+      const targetOf = (name: string) => panelOf().targets.find((t: any) => t.target === name);
+      let memoryFile = "";
+      try {
+        await svc.handleViewMessage({ type: "loadMemory" });
+        ok(panelOf(), "the host answered with the memory panel");
+        memoryFile = path.join(panelOf().home, "memories", "MEMORY.md");
+        mkdirSync(path.dirname(memoryFile), { recursive: true });
+        rmSync(memoryFile + ".hermes-ide-bak", { force: true });
+
+        // what Hermes wrote is shown as separate notes
+        writeFileSync(memoryFile, "Proyek ini memakai pnpm.\n§\nJangan sentuh folder legacy.");
+        await svc.handleViewMessage({ type: "loadMemory" });
+        equal(targetOf("memory").entries, ["Proyek ini memakai pnpm.", "Jangan sentuh folder legacy."], "entries parsed");
+        equal(targetOf("memory").limit, 2200, "Hermes' default budget");
+
+        // an edit is saved exactly the way Hermes reads it back, keeping the old file
+        const hash = targetOf("memory").hash;
+        await svc.handleViewMessage({ type: "saveMemory", target: "memory", entries: ["Proyek ini memakai pnpm.", " Pengguna suka kopi tanpa gula. ", ""], hash });
+        equal(panelOf().notice?.level, "ok", "saved: " + JSON.stringify(panelOf().notice));
+        equal(readFileSync(memoryFile, "utf8"), "Proyek ini memakai pnpm.\n§\nPengguna suka kopi tanpa gula.", "file content");
+        equal(readFileSync(memoryFile + ".hermes-ide-bak", "utf8"), "Proyek ini memakai pnpm.\n§\nJangan sentuh folder legacy.", "previous version kept");
+
+        // a save based on an old read is refused (the agent may have saved something meanwhile)
+        await svc.handleViewMessage({ type: "saveMemory", target: "memory", entries: ["terlambat"], hash });
+        equal(panelOf().notice?.level, "error", "stale save refused");
+        ok(readFileSync(memoryFile, "utf8").includes("kopi"), "file untouched by the stale save");
+
+        // over the budget is refused
+        await svc.handleViewMessage({ type: "saveMemory", target: "memory", entries: ["x".repeat(2300)], hash: targetOf("memory").hash });
+        equal(panelOf().notice?.level, "error", "too long refused");
+
+        // a session started afterwards reads the file: it is in the system prompt the model gets
+        await svc.newSession();
+        await script([{ text: "Baik." }]);
+        await svc.handleViewMessage({ type: "send", text: "halo memori" });
+        const system = JSON.stringify((await agentRequests()).at(-1).messages.find((m: any) => m.role === "system")?.content ?? "");
+        ok(system.includes("kopi tanpa gula"), "the note reached the model's system prompt");
+      } finally {
+        sub.dispose();
+        if (memoryFile) rmSync(memoryFile, { force: true });
+        if (memoryFile) rmSync(memoryFile + ".hermes-ide-bak", { force: true });
+      }
+    }],
+
+    ["phase 6 skills: the gallery lists what `hermes skills` reports, and searching is switched off in full local mode", async () => {
+      const got: any[] = [];
+      const sub = svc.attachView((m) => got.push(m));
+      const skillsOf = () => [...got].reverse().find((m) => m.type === "skills")?.panel;
+      const cfg = vscode.workspace.getConfiguration("hermes.privacy");
+      let skillDir = "";
+      try {
+        await svc.handleViewMessage({ type: "loadMemory" }); // tells where the IDE's Hermes keeps its files
+        const home = [...got].reverse().find((m) => m.type === "memory").panel.home as string;
+        skillDir = path.join(home, "skills", "notes", "ide-test-skill");
+        mkdirSync(skillDir, { recursive: true });
+        writeFileSync(path.join(skillDir, "SKILL.md"), "---\nname: ide-test-skill\ndescription: A skill made by the test.\n---\n\n# Test\nSay hi.\n");
+
+        await svc.handleViewMessage({ type: "loadSkills" });
+        const listed = skillsOf();
+        ok(listed && !listed.working, "the list came back");
+        ok(listed.installed.some((s: any) => s.name === "ide-test-skill" && s.source === "local" && s.enabled), "the local skill is listed: " + JSON.stringify(listed).slice(0, 400));
+
+        // a local skill is not the gallery's to remove
+        await svc.handleViewMessage({ type: "uninstallSkill", name: "ide-test-skill" });
+        equal(skillsOf().notice?.level, "error", "refused");
+        ok(existsSync(path.join(skillDir, "SKILL.md")), "still there");
+
+        // full local mode: nothing goes to the registries
+        await cfg.update("localOnly", true, vscode.ConfigurationTarget.Global);
+        await waitFor(() => svc.state.privacy?.localOnly === true, "local mode published");
+        await svc.handleViewMessage({ type: "searchSkills", query: "git" });
+        ok(skillsOf().blocked, "the panel says searching is off");
+        equal(skillsOf().results, [], "no results came from the internet");
+      } finally {
+        sub.dispose();
+        await cfg.update("localOnly", undefined, vscode.ConfigurationTarget.Global);
+        if (skillDir) rmSync(skillDir, { recursive: true, force: true });
+        await waitFor(() => svc.state.privacy?.localOnly === false && svc.state.phase === "ready", "back to normal", 90_000);
+      }
+    }],
+
+    ["phase 6 parallel tasks: agents work in their own worktrees, commands are refused, the result is applied or discarded", async () => {
+      const tm = svc.taskManager;
+      tm.setConfirm(async () => true);
+      const gitIn = (args: string[]) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], { cwd: ws, encoding: "utf8" });
+      const created: string[] = [];
+      const hadGit = existsSync(path.join(ws, ".git"));
+      try {
+        if (!hadGit) {
+          gitIn(["init", "-q", "-b", "main"]);
+          writeFileSync(path.join(ws, "base.txt"), "base\n");
+          gitIn(["add", "-A"]);
+          gitIn(["commit", "-q", "-m", "base"]);
+        }
+        const taskNamed = (marker: string) => tm.views().find((v) => v.title.includes(marker));
+        const finished = (marker: string) => taskNamed(marker) && !["starting", "running"].includes(taskNamed(marker)!.status) ? taskNamed(marker) : undefined;
+
+        // one agent: writes a file, then tries a command it is not allowed to run
+        await script([
+          { when: "[satu]", toolCalls: [{ name: "write_file", arguments: { path: "hasil-satu.txt", content: "dari agen satu\n" } }] },
+          { when: "[satu]", toolCalls: [{ name: "terminal", arguments: { command: "echo halo > luar-satu.txt" } }] },
+          { when: "[satu]", text: "Selesai: hasil-satu.txt dibuat." },
+        ]);
+        await svc.handleViewMessage({ type: "startTask", prompt: "[satu] buat hasil-satu.txt", allowCommands: false });
+        const one = await waitFor(() => finished("[satu]"), "the first task to finish", 180_000);
+        created.push("hasil-satu.txt");
+        equal(one.status, "done", "task status (error: " + one.error + ")");
+        equal(one.files, ["hasil-satu.txt"], "the files it changed");
+        ok(one.summary?.includes("Selesai"), "its closing summary is kept: " + one.summary);
+        equal(one.deniedCount, 1, "the command was refused");
+        equal(one.denied[0].reason, "commandsOff", "and the panel can say why");
+
+        const dir = tm.directoryOf(one.id)!;
+        ok(existsSync(path.join(dir, "hasil-satu.txt")), "the file is in the task's worktree");
+        ok(!existsSync(path.join(dir, "luar-satu.txt")), "the refused command did not run");
+        ok(!existsSync(path.join(ws, "hasil-satu.txt")), "the project itself is untouched until the result is applied");
+        ok(!existsSync(path.join(ws, "luar-satu.txt")), "the refused command did not run in the project either");
+
+        // two agents at the same time, each with its own replies and its own files
+        await script([
+          { when: "[A]", delayMs: 2500, toolCalls: [{ name: "write_file", arguments: { path: "a.txt", content: "A\n" } }] },
+          { when: "[A]", text: "A pronto" },
+          { when: "[B]", delayMs: 2500, toolCalls: [{ name: "write_file", arguments: { path: "b.txt", content: "B\n" } }] },
+          { when: "[B]", text: "B pronto" },
+        ]);
+        await svc.handleViewMessage({ type: "startTask", prompt: "[A] buat a.txt", allowCommands: false });
+        await svc.handleViewMessage({ type: "startTask", prompt: "[B] buat b.txt", allowCommands: false });
+        await waitFor(() => tm.views().filter((v) => v.status === "running").length === 2, "both agents running at the same time", 120_000);
+        const [a, b] = await Promise.all([waitFor(() => finished("[A]"), "task A", 180_000), waitFor(() => finished("[B]"), "task B", 180_000)]);
+        equal(a.files, ["a.txt"], "A changed only its own file");
+        equal(b.files, ["b.txt"], "B changed only its own file");
+        ok(!existsSync(path.join(tm.directoryOf(a.id)!, "b.txt")) && !existsSync(path.join(tm.directoryOf(b.id)!, "a.txt")), "they do not see each other's work");
+
+        // review and apply the first result: it arrives as an uncommitted change in the project
+        await svc.handleViewMessage({ type: "viewTaskChanges", id: one.id });
+        ok(vscode.window.activeTextEditor?.document.getText().includes("hasil-satu.txt"), "the diff is shown");
+        await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+        await svc.handleViewMessage({ type: "applyTask", id: one.id });
+        equal(readFileSync(path.join(ws, "hasil-satu.txt"), "utf8").replace(/\r\n/g, "\n"), "dari agen satu\n", "the result is in the project");
+        ok(taskNamed("[satu]")!.applied, "and marked as applied");
+
+        // discard the others: worktree and branch are gone
+        for (const task of [a, b, one]) {
+          const folder = tm.directoryOf(task.id)!;
+          await svc.handleViewMessage({ type: "discardTask", id: task.id });
+          ok(!existsSync(folder), "worktree removed");
+        }
+        equal(tm.views().length, 0, "no tasks left");
+        equal(gitIn(["branch", "--list", "hermes/task-*"]).trim(), "", "branches removed");
+      } finally {
+        tm.setConfirm(undefined);
+        for (const f of created) rmSync(path.join(ws, f), { force: true });
+        if (!hadGit) {
+          // git marks its object files read-only, which Windows refuses to delete until the attribute is cleared
+          if (process.platform === "win32") try { execFileSync("attrib", ["-r", path.join(ws, ".git", "*"), "/s", "/d"], { stdio: "pipe" }); } catch { /* best effort */ }
+          rmSync(path.join(ws, ".git"), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        }
+      }
+    }],
+
     ["a crashed Hermes can be restarted without reloading, keeping the session (NFR reliability)", async () => {
       // Hermes only persists sessions that have been prompted, so give this one some history first.
       await script([{ text: "Sebelum crash." }]);
@@ -419,7 +1090,10 @@ export async function run(): Promise<void> {
   ];
 
   const failures: string[] = [];
-  for (const [name, fn] of tests) {
+  // HERMES_TEST_ONLY="phase 6,crashed": run the first two tests (they start the panel) and the ones whose name contains any part.
+  const only = (process.env.HERMES_TEST_ONLY ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  for (const [index, [name, fn]] of tests.entries()) {
+    if (only.length && index > 1 && !only.some((part) => name.includes(part))) continue;
     const t0 = Date.now();
     try {
       await fn();

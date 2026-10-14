@@ -12,6 +12,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
+    "resolveJsonModule": true,
     "rootDir": "."
   },
   "include": ["src/**/*.ts", "test/**/*.ts"],

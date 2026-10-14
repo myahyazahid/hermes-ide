@@ -18,6 +18,8 @@ export async function startOpenAIMock({ port = 0, apiKey, models = [{ id: "mock-
   /** FIM replies for /completions: { text, delayMs? }; default echoes a marker. */
   const fimQueue = [];
   const auxReply = "Mock title";
+  /** model id -> HTTP status to answer chat requests with (see /__fail). */
+  const failModels = new Map();
   let callSeq = 0;
 
   const server = http.createServer(async (req, res) => {
@@ -34,6 +36,13 @@ export async function startOpenAIMock({ port = 0, apiKey, models = [{ id: "mock-
     if (path === "/__script" && req.method === "POST") {
       queue.push(...(Array.isArray(body) ? body : [body]));
       return json(res, 200, { queued: queue.length });
+    }
+    if (path === "/__fail" && req.method === "POST") {
+      for (const [model, status] of Object.entries(body ?? {})) {
+        if (status) failModels.set(model, Number(status));
+        else failModels.delete(model);
+      }
+      return json(res, 200, { failing: [...failModels.keys()] });
     }
     if (path === "/__fim" && req.method === "POST") {
       fimQueue.push(...(Array.isArray(body) ? body : [body]));
@@ -66,13 +75,23 @@ export async function startOpenAIMock({ port = 0, apiKey, models = [{ id: "mock-
       if (models.length && body?.model && !models.some((m) => m.id === body.model)) {
         return json(res, 404, { error: { message: `The model '${body.model}' does not exist`, code: "model_not_found" } });
       }
+      if (failModels.has(body?.model)) {
+        return json(res, failModels.get(body.model), { error: { message: `forced failure for ${body.model}`, code: "forced_failure" } });
+      }
       // Hermes also calls the model for auxiliary work (session titles) without tools; those must
       // not consume the replies scripted for the agent loop.
       // Hermes' background memory review also runs with tools; it is not an agent turn either.
       const lastUser = [...(body?.messages ?? [])].reverse().find((x) => x.role === "user")?.content;
       const isBackgroundReview = typeof lastUser === "string" && lastUser.startsWith("Review the conversation above");
       const isAgentTurn = Array.isArray(body?.tools) && body.tools.length > 0 && !isBackgroundReview;
-      const reply = isAgentTurn && queue.length ? queue.shift() : isAgentTurn ? defaultReply : { text: auxReply };
+      // A scripted reply may carry `when`: it then goes to the agent whose user message contains that text, which keeps
+      // several agents running at once (parallel tasks) from taking each other's replies.
+      let scripted;
+      if (isAgentTurn) {
+        const i = queue.findIndex((r) => !r.when || (typeof lastUser === "string" && lastUser.includes(r.when)));
+        if (i >= 0) scripted = queue.splice(i, 1)[0];
+      }
+      const reply = scripted ?? (isAgentTurn ? defaultReply : { text: auxReply });
       if (reply.rejectTools && body?.tools) {
         return json(res, 400, { error: { message: "This model does not support tools", code: "tools_unsupported" } });
       }
@@ -132,6 +151,8 @@ export async function startOpenAIMock({ port = 0, apiKey, models = [{ id: "mock-
     scriptFim(replies) { fimQueue.push(...replies); },
     fimRequests() { return requests.filter((r) => r.path === "/v1/completions"); },
     setDefault(reply) { defaultReply = reply; },
+    /** Answer chat requests for `model` with HTTP `status` (0 clears it). */
+    failModel(model, status) { if (status) failModels.set(model, status); else failModels.delete(model); },
     chatRequests() { return requests.filter((r) => r.path.endsWith("/chat/completions")); },
     close() { return new Promise((resolve) => { server.closeAllConnections?.(); server.close(() => resolve()); }); },
   };

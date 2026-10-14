@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as acp from "@agentclientprotocol/sdk";
-import { Transcript } from "../../src/core/transcript";
+import { Transcript, transcriptToMarkdown } from "../../src/core/transcript";
 
 const text = (sessionUpdate: "agent_message_chunk" | "agent_thought_chunk" | "user_message_chunk", t: string): acp.SessionUpdate =>
   ({ sessionUpdate, content: { type: "text", text: t } }) as acp.SessionUpdate;
@@ -44,6 +44,23 @@ describe("Transcript", () => {
     expect(tr.all()[0]).toMatchObject({ added: 2, removed: 1, status: "failed", detail: "boom", paths: ["/w/a.ts"] });
   });
 
+  it("keeps tool input/output and thought timing for the timeline", () => {
+    let now = 1000;
+    const tr = new Transcript(() => now);
+    tr.addUser("go");
+    tr.apply(text("agent_thought_chunk", "hmm"));
+    now = 4000;
+    tr.apply(text("agent_thought_chunk", " ok"));
+    tr.apply({ sessionUpdate: "tool_call", toolCallId: "t1", title: "terminal: ls", kind: "execute", rawInput: { command: "ls -la", description: "List files" } });
+    tr.apply({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed", rawOutput: "a.ts\nb.ts" });
+    tr.apply({ sessionUpdate: "tool_call", toolCallId: "t2", title: "skill_view: x", kind: "read", rawInput: { name: "x" } });
+    const [user, thought, term, skill] = tr.all();
+    expect(user).toMatchObject({ at: 1000 });
+    expect(thought).toMatchObject({ text: "hmm ok", startedAt: 1000, endedAt: 4000 });
+    expect(term).toMatchObject({ input: "ls -la", description: "List files", detail: "a.ts\nb.ts" });
+    expect(skill).toMatchObject({ input: '{\n  "name": "x"\n}' });
+  });
+
   it("ignores Hermes' synthetic permission bubbles", () => {
     const tr = new Transcript();
     tr.apply({ sessionUpdate: "tool_call_update", toolCallId: "perm-check-3", status: "completed" });
@@ -77,5 +94,18 @@ describe("Transcript", () => {
     tr.apply(text("user_message_chunk", "it"));
     tr.apply(text("agent_message_chunk", "ok"));
     expect(tr.all().map((i) => [i.kind, "text" in i ? i.text : ""])).toEqual([["user", "fix it"], ["agent", "ok"]]);
+  });
+});
+
+describe("transcriptToMarkdown", () => {
+  it("renders turns, tool IN/OUT and fences that survive backticks", () => {
+    const tr = new Transcript(() => 1000);
+    tr.addUser("list files");
+    tr.apply({ sessionUpdate: "tool_call", toolCallId: "t1", title: "terminal: ls", kind: "execute", status: "completed", rawInput: { command: "echo ```" }, rawOutput: "a.ts" });
+    tr.apply(text("agent_message_chunk", "Done."));
+    const md = transcriptToMarkdown(tr.all(), "Files");
+    expect(md).toContain("# Files\n\n## User\n\nlist files");
+    expect(md).toContain("**terminal: ls** _(completed)_\n\n````\necho ```\n````\n\n```\na.ts\n```");
+    expect(md.trimEnd().endsWith("Done.")).toBe(true);
   });
 });

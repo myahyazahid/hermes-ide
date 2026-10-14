@@ -2,7 +2,7 @@
   "name": "hermes-ide",
   "displayName": "Hermes IDE",
   "description": "%ext.description%",
-  "version": "0.3.3",
+  "version": "0.6.0",
   "publisher": "yahya",
   "private": true,
   "license": "UNLICENSED",
@@ -15,7 +15,8 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:hermes.chatPanel"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -31,6 +32,14 @@
           "title": "Hermes IDE",
           "icon": "media/hermes.svg"
         }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "hermes-ide-secondary",
+          "title": "Hermes",
+          "icon": "media/hermes.svg",
+          "when": "!hermes.doesNotSupportSecondarySidebar"
+        }
       ]
     },
     "views": {
@@ -39,6 +48,14 @@
           "type": "webview",
           "id": "hermes.chat",
           "name": "%view.chat%"
+        }
+      ],
+      "hermes-ide-secondary": [
+        {
+          "type": "webview",
+          "id": "hermes.chatSecondary",
+          "name": "%view.chat%",
+          "when": "!hermes.doesNotSupportSecondarySidebar"
         }
       ],
       "explorer": [
@@ -53,6 +70,15 @@
         "command": "hermes.openChat",
         "title": "%cmd.openChat%",
         "category": "Hermes"
+      },
+      {
+        "command": "hermes.openInEditor",
+        "title": "%cmd.openInEditor%",
+        "category": "Hermes",
+        "icon": {
+          "light": "media/hermes-light.svg",
+          "dark": "media/hermes-dark.svg"
+        }
       },
       {
         "command": "hermes.newSession",
@@ -167,20 +193,75 @@
         "title": "%cmd.indexSearch%",
         "category": "Hermes",
         "icon": "$(search)"
+      },
+      {
+        "command": "hermes.update.check",
+        "title": "%cmd.updateCheck%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.rules.open",
+        "title": "%cmd.rulesOpen%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.usage.show",
+        "title": "%cmd.usageShow%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.checkpoint.undoRestore",
+        "title": "%cmd.checkpointUndo%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.hermesInstall",
+        "title": "%cmd.hermesInstall%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.hermesSetup",
+        "title": "%cmd.hermesSetup%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.hermesCheckUpdate",
+        "title": "%cmd.hermesCheckUpdate%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.hermesUpdate",
+        "title": "%cmd.hermesUpdate%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.learning.toggle",
+        "title": "%cmd.learningToggle%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.deploy.history",
+        "title": "%cmd.deployHistory%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.stack.add",
+        "title": "%cmd.stackAdd%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.privacy.toggle",
+        "title": "%cmd.privacyToggle%",
+        "category": "Hermes"
+      },
+      {
+        "command": "hermes.privacy.report",
+        "title": "%cmd.privacyReport%",
+        "category": "Hermes"
       }
     ],
     "menus": {
       "view/title": [
-        {
-          "command": "hermes.newSession",
-          "when": "view == hermes.chat",
-          "group": "navigation@1"
-        },
-        {
-          "command": "hermes.configureEndpoint",
-          "when": "view == hermes.chat",
-          "group": "navigation@2"
-        },
         {
           "command": "hermes.newSession",
           "when": "view == hermes.sessions",
@@ -193,6 +274,10 @@
         }
       ],
       "editor/title": [
+        {
+          "command": "hermes.openInEditor",
+          "group": "navigation@3"
+        },
         {
           "command": "hermes.diff.accept",
           "when": "hermes.diffReviewActive && resourceScheme == hermes-diff",
@@ -302,8 +387,28 @@
             "id",
             "en"
           ],
-          "default": "auto",
+          "default": "id",
           "markdownDescription": "%cfg.language%"
+        },
+        "hermes.agentLanguage": {
+          "type": "string",
+          "enum": [
+            "ui",
+            "id",
+            "en",
+            "off"
+          ],
+          "default": "ui",
+          "markdownDescription": "%cfg.agentLanguage%"
+        },
+        "hermes.learning.level": {
+          "type": "string",
+          "enum": [
+            "beginner",
+            "intermediate"
+          ],
+          "default": "beginner",
+          "markdownDescription": "%cfg.learningLevel%"
         },
         "hermes.activeProfile": {
           "type": "string",
@@ -471,6 +576,174 @@
           "minimum": 8,
           "maximum": 4096,
           "markdownDescription": "%cfg.indexMaxFileKB%"
+        },
+        "hermes.update.check": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "markdownDescription": "%cfg.updateCheck%"
+        },
+        "hermes.update.feedUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "%cfg.updateFeedUrl%"
+        },
+        "hermes.pricing": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "%cfg.pricing%",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "input",
+              "output"
+            ],
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Price per 1M input tokens."
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Price per 1M output tokens."
+              },
+              "cachedInput": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Price per 1M cached input tokens (defaults to input)."
+              }
+            }
+          }
+        },
+        "hermes.usage.currency": {
+          "type": "string",
+          "default": "$",
+          "markdownDescription": "%cfg.usageCurrency%"
+        },
+        "hermes.notifications.mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "unfocused",
+            "always"
+          ],
+          "default": "unfocused",
+          "markdownDescription": "%cfg.notifyMode%"
+        },
+        "hermes.notifications.minSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "maximum": 600,
+          "markdownDescription": "%cfg.notifyMinSeconds%"
+        },
+        "hermes.notifications.native": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%cfg.notifyNative%"
+        },
+        "hermes.hermesUpdate.check": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%cfg.hermesUpdateCheck%"
+        },
+        "hermes.privacy.localOnly": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "%cfg.privacyLocalOnly%"
+        },
+        "hermes.privacy.allowedHosts": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "%cfg.privacyAllowedHosts%"
+        },
+        "hermes.routing.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "%cfg.routingEnabled%"
+        },
+        "hermes.routing.lightModel": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "%cfg.routingLight%"
+        },
+        "hermes.routing.heavyModel": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "%cfg.routingHeavy%"
+        },
+        "hermes.routing.fallbackModel": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "%cfg.routingFallback%"
+        },
+        "hermes.routing.lightMaxChars": {
+          "type": "integer",
+          "default": 280,
+          "minimum": 20,
+          "maximum": 4000,
+          "scope": "application",
+          "markdownDescription": "%cfg.routingMaxChars%"
+        },
+        "hermes.deploy.targets": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "host",
+              "user"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "host": {
+                "type": "string"
+              },
+              "user": {
+                "type": "string"
+              },
+              "port": {
+                "type": "integer"
+              },
+              "identityFile": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "gitRemote": {
+                "type": "string"
+              },
+              "steps": {
+                "type": "string"
+              }
+            }
+          },
+          "markdownDescription": "%cfg.deployTargets%"
+        },
+        "hermes.tasks.maxParallel": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 6,
+          "scope": "application",
+          "markdownDescription": "%cfg.tasksMaxParallel%"
         }
       }
     }
@@ -482,7 +755,12 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.mts",
     "package": "node esbuild.mjs --production && npx --yes @vscode/vsce@latest package --no-dependencies --allow-missing-repository --skip-license --no-rewrite-relative-links",
-    "test:vscode": "node esbuild.mjs && node test/vscode/runTest.mjs"
+    "test:vscode": "node esbuild.mjs && node test/vscode/runTest.mjs",
+    "ide:stage": "node ide/scripts/build.mjs --stage-only",
+    "ide:build": "node ide/scripts/build.mjs",
+    "ide:release": "node ide/scripts/build.mjs --release",
+    "ide:smoke": "node ide/scripts/smoke.mjs",
+    "publish:openvsx": "node ide/scripts/publish-openvsx.mjs"
   },
   "dependencies": {
     "diff": "^8.0.2",
@@ -490,6 +768,7 @@
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "^1.7.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
@@ -497,7 +776,9 @@
     "@vscode/test-electron": "^3.1.0",
     "dompurify": "^3.2.3",
     "esbuild": "^0.28.2",
+    "innosetup-compiler": "^6.3.1",
     "marked": "^15.0.4",
+    "rcedit": "^5.0.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.7.2",

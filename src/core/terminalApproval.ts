@@ -5,18 +5,24 @@
 // the panel already shows. The hook below is inert unless Hermes was launched by Hermes IDE, so a
 // user's Hermes CLI behaves exactly as before.
 import { parseDocument, isMap, isSeq, type Document, YAMLMap, YAMLSeq } from "yaml";
+import { NETWORK_TOOL_PATTERN } from "./privacy";
 
 export const HOOK_EVENT = "pre_tool_call";
-export const HOOK_MATCHER = "terminal|execute_code";
+/** Terminal commands (asked about) and the tools that reach the network (blocked in full local mode). */
+export const HOOK_MATCHER = `terminal|execute_code|${NETWORK_TOOL_PATTERN}`;
 export const HOOK_ENV = "HERMES_IDE_TERMINAL_APPROVAL";
+/** Set when full local mode is on: the hook then blocks the network tools instead of ignoring them. */
+export const LOCAL_ONLY_ENV = "HERMES_IDE_LOCAL_ONLY";
 export const HOOK_SCRIPT_NAME = "hermes-ide-terminal-approval.js";
 const MESSAGE_PREFIX = "[hermes-ide] ";
 
 /** Plain CommonJS so any Node (including the one Hermes bundles) can run it. */
-export const HOOK_SCRIPT = `// Hermes IDE: asks for permission before every terminal command (pre_tool_call hook).
-// Does nothing unless Hermes was started by Hermes IDE.
+export const HOOK_SCRIPT = `// Hermes IDE: asks for permission before every terminal command and, in full local mode, blocks the tools that
+// reach the network (pre_tool_call hook). Does nothing unless Hermes was started by Hermes IDE.
 "use strict";
-if (process.env.${HOOK_ENV} !== "1") process.exit(0);
+const approve = process.env.${HOOK_ENV} === "1";
+const localOnly = process.env.${LOCAL_ONLY_ENV} === "1";
+if (!approve && !localOnly) process.exit(0);
 const crypto = require("crypto");
 let raw = "";
 process.stdin.setEncoding("utf8");
@@ -26,6 +32,11 @@ process.stdin.on("end", () => {
   try { data = JSON.parse(raw || "{}"); } catch (_) {}
   const input = data.tool_input || {};
   const tool = String(data.tool_name || "tool");
+  if (/^(${NETWORK_TOOL_PATTERN})$/.test(tool)) {
+    if (localOnly) process.stdout.write(JSON.stringify({ action: "block", message: ${JSON.stringify(MESSAGE_PREFIX + "Full local mode is on, so ")} + tool + ${JSON.stringify(" (it reaches the network) is blocked. Work from the project files and what you already know.")} }));
+    return;
+  }
+  if (!approve) return;
   const subject = typeof input.command === "string" ? input.command : typeof input.code === "string" ? input.code : JSON.stringify(input);
   const key = crypto.createHash("sha256").update(tool + "\\0" + subject).digest("hex").slice(0, 16);
   process.stdout.write(JSON.stringify({ action: "approve", message: ${JSON.stringify(MESSAGE_PREFIX)} + tool + ": " + subject, rule_key: "hermes-ide:" + key }));
@@ -116,7 +127,7 @@ export function withApprovalHook(configYaml: string, command: string): string {
   }
   const seq = list as YAMLSeq;
   const existing = seq.items.find(isOurs);
-  if (existing && isMap(existing) && existing.get("command") === command && existing.get("fail_closed") === true) {
+  if (existing && isMap(existing) && existing.get("command") === command && existing.get("fail_closed") === true && existing.get("matcher") === HOOK_MATCHER) {
     return configYaml;
   }
   seq.items = seq.items.filter((i) => !isOurs(i));

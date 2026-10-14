@@ -11,6 +11,7 @@ import type { McpTool } from "../core/mcpHttpServer";
 import { VectorStore, type SearchHit } from "../core/vectorStore";
 import type { IndexView } from "../shared/protocol";
 import type { AgentLog } from "./agentLog";
+import { blockedByLocalMode } from "./privacyGate";
 
 export const INDEX_SECRET = "hermes.index.apiKey";
 const EXCLUDE = "**/{node_modules,.git,dist,out,build,.venv,venv,vendor,__pycache__,.next,.dart_tool,coverage,target}/**";
@@ -46,7 +47,7 @@ export class CodebaseIndex implements vscode.Disposable {
       watcher.onDidCreate(mark),
       watcher.onDidDelete(mark),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration("hermes.index")) void this.reconfigure();
+        if (e.affectsConfiguration("hermes.index") || e.affectsConfiguration("hermes.privacy")) void this.reconfigure();
       }),
     );
   }
@@ -62,12 +63,14 @@ export class CodebaseIndex implements vscode.Disposable {
   endpoint(): EmbeddingEndpoint | undefined {
     const baseUrl = this.cfg.get<string>("baseUrl", "").trim();
     const model = this.cfg.get<string>("model", "").trim();
+    if (baseUrl && blockedByLocalMode(baseUrl)) return undefined; // full local mode: code is never embedded remotely
     return baseUrl && model ? { baseUrl, model, apiKey: this.apiKey } : undefined;
   }
 
   view(): IndexView {
     return {
       enabled: this.enabled,
+      blocked: this.enabled && blockedByLocalMode(this.cfg.get<string>("baseUrl", "")),
       baseUrl: this.cfg.get<string>("baseUrl", ""),
       model: this.cfg.get<string>("model", ""),
       keyHint: maskKey(this.apiKey),
@@ -93,7 +96,8 @@ export class CodebaseIndex implements vscode.Disposable {
     const ep = this.endpoint();
     if (!this.enabled || !ep || !this.root()) {
       this.store = undefined;
-      this.setStatus(this.enabled && !ep ? "needsSetup" : "disabled");
+      const blocked = this.enabled && blockedByLocalMode(this.cfg.get<string>("baseUrl", ""));
+      this.setStatus(this.enabled && !ep && !blocked ? "needsSetup" : "disabled");
       return;
     }
     this.store = (await this.load(ep.model)) ?? new VectorStore(ep.model);
