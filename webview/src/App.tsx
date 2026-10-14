@@ -9,7 +9,7 @@ import { SessionBar } from "./Sessions";
 import { SettingsCard, type PresetDraft } from "./SettingsCard";
 import { StackBanner, ToolsCard } from "./ToolsCard";
 import { Transcript } from "./Transcript";
-import nousMask from "./nous-mask.png";
+import nousIcon from "./nous-icon.png";
 
 export function App() {
   const [locale, setLocale] = useState<Locale>("en");
@@ -69,6 +69,13 @@ export function App() {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
+  // The tools card opens from the "/" menu.
+  useEffect(() => {
+    const onTools = () => setToolsOpen((o) => !o);
+    window.addEventListener("hermes:tools", onTools);
+    return () => window.removeEventListener("hermes:tools", onTools);
+  }, []);
+
   // Setup states need the endpoint form right away.
   useEffect(() => {
     if (state?.phase === "needsSetup" && state.endpoint.activeProfileId !== "hermes") setEndpointOpen(true);
@@ -81,7 +88,7 @@ export function App() {
 
   return (
     <div className="app">
-      <Header state={state} locale={locale} onSettings={() => setEndpointOpen((o) => !o)} onTools={() => setToolsOpen((o) => !o)} toolsOpen={toolsOpen} />
+      <Header state={state} locale={locale} onSettings={() => setEndpointOpen((o) => !o)} />
       <SessionBar state={state} locale={locale} items={items} sessions={sessions} />
       <Banner state={state} locale={locale} quiet={onboarding} />
       <ApprovalBanner state={state} locale={locale} />
@@ -126,19 +133,16 @@ function statusKey(state: ViewState): StringKey {
   return `status.${state.phase}` as StringKey;
 }
 
-function Header({ state, locale, onSettings, onTools, toolsOpen }: { state: ViewState; locale: Locale; onSettings(): void; onTools(): void; toolsOpen: boolean }) {
+function Header({ state, locale, onSettings }: { state: ViewState; locale: Locale; onSettings(): void }) {
   return (
     <header className="header">
-      <span className="logo" aria-hidden style={{ maskImage: `url(${nousMask})`, WebkitMaskImage: `url(${nousMask})` }} />
+      <img className="logo" src={nousIcon} alt="" aria-hidden />
       <span className="title">{t(locale, "header.title")}</span>
       <span className={`status ${state.phase}${state.busy ? " busy" : ""}`}>
         <span className="dot" aria-hidden />
         {t(locale, statusKey(state))}
       </span>
       <span className="spacer" />
-      <button type="button" className={`icon${toolsOpen ? " active" : ""}`} title={t(locale, "tools.open")} aria-label={t(locale, "tools.open")} aria-pressed={toolsOpen} onClick={onTools}>
-        🧰
-      </button>
       <button type="button" className="icon" title={t(locale, "action.settings")} aria-label={t(locale, "action.settings")} onClick={onSettings}>
         ⚙
       </button>

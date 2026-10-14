@@ -206,20 +206,50 @@ export async function run(): Promise<void> {
       ok(Date.now() - started < 15_000, "stopped quickly");
     }],
 
-    ["messages sent while a turn runs are queued and go out together when it ends", async () => {
+    ["a message sent while the agent works is slipped into the running turn (/steer)", async () => {
+      const file = path.join(ws, "steer-target.txt");
+      writeFileSync(file, "isi file");
+      await script([
+        { toolCalls: [{ name: "read_file", arguments: { path: file.replace(/\\/g, "/") } }], delayMs: 3000 },
+        { text: "Sudah, sesuai arahanmu." },
+      ]);
+      const sending = svc.handleViewMessage({ type: "send", text: "baca file itu" });
+      await waitFor(() => svc.state.busy, "busy");
+      await svc.handleViewMessage({ type: "send", text: "selip-A juga cek ejaan" });
+      const bubble = items().find((i) => i.kind === "user" && i.text === "selip-A juga cek ejaan");
+      ok(bubble && (bubble as any).steer, "the steer shows as its own bubble: " + JSON.stringify(bubble));
+      equal(svc.state.queued?.length ?? 0, 0, "nothing waits in the IDE queue");
+      await sending;
+      const last = JSON.stringify((await agentRequests()).at(-1)?.messages ?? []);
+      ok(last.includes("selip-A juga cek ejaan"), "the model's next request carries the steer: " + last.slice(-600));
+      ok(!items().some((i) => i.kind === "agent" && i.text.includes("Steer queued")), "Hermes' steer acknowledgement stays out of the reply");
+      await sleep(1500);
+      equal(svc.state.busy, false, "no extra turn: the steer was delivered inside the running one");
+    }],
+
+    ["a steer that arrives after the agent's last step is sent as the next prompt", async () => {
       await script([{ text: "pertama", delayMs: 3000 }, { text: "kedua" }]);
       const sending = svc.handleViewMessage({ type: "send", text: "satu" });
       await waitFor(() => svc.state.busy, "busy");
-      await svc.handleViewMessage({ type: "send", text: "antre-A" });
-      await svc.handleViewMessage({ type: "send", text: "antre-B" });
-      equal(svc.state.queued?.length, 2, "both messages wait in the queue");
+      await svc.handleViewMessage({ type: "send", text: "selip-telat" });
       await sending;
-      const merged = await waitFor(() => items().find((i) => i.kind === "user" && i.text === "antre-A\n\nantre-B"), "the queue sent as one message");
-      ok(merged, "merged message in the transcript");
+      await waitFor(() => (items().find((i) => i.kind === "user" && i.text === "selip-telat") as any)?.turn !== undefined, "the steer became a turn of its own");
+      await waitFor(() => !svc.state.busy, "second turn done");
+      ok(JSON.stringify((await agentRequests()).at(-1)?.messages ?? []).includes("selip-telat"), "the model got it");
+    }],
+
+    ["attachments sent while the agent works wait in the queue and go out when it ends", async () => {
+      await script([{ text: "pertama", delayMs: 3000 }, { text: "kedua" }]);
+      const sending = svc.handleViewMessage({ type: "send", text: "satu" });
+      await waitFor(() => svc.state.busy, "busy");
+      await svc.handleViewMessage({ type: "send", text: "antre-gambar", context: [{ kind: "image", path: "x.png", mimeType: "image/png", data: "iVBORw0KGgo=" }] });
+      equal(svc.state.queued?.length, 1, "a message with an attachment waits in the queue");
+      await sending;
+      await waitFor(() => items().some((i) => i.kind === "user" && i.text === "antre-gambar"), "the queue sent");
       await waitFor(() => !svc.state.busy && !svc.state.queued?.length, "second turn done and queue empty");
     }],
 
-    ["a stopped turn keeps the queue; send now delivers it", async () => {
+    ["a stopped turn keeps an undelivered steer in the queue; send now delivers it", async () => {
       await script([{ text: "lambat", delayMs: 20_000 }, { text: "oke" }]);
       const sending = svc.handleViewMessage({ type: "send", text: "tunggu lagi" });
       await waitFor(() => svc.state.busy, "busy");

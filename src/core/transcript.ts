@@ -88,6 +88,24 @@ export class Transcript {
     return { id, turn };
   }
 
+  /** A message slipped into the running turn (/steer). It starts no turn of its own. */
+  addSteer(text: string): string {
+    const id = this.newId("user");
+    this.push({ kind: "user", id, text, at: this.now(), steer: true });
+    return id;
+  }
+
+  /** A steer Hermes never delivered is sent as a prompt of its own: its bubble becomes that turn's. */
+  promoteSteer(id: string, text?: string): { id: string; turn: number } | undefined {
+    const item = this.byId.get(id);
+    if (!item || item.kind !== "user" || !item.steer) return undefined;
+    item.steer = false;
+    if (text) item.text = text;
+    item.turn = this.userTurns++;
+    this.changed.add(id);
+    return { id, turn: item.turn };
+  }
+
   /** How many user messages the transcript holds; the next one gets this number as its turn. */
   get userCount(): number {
     return this.userTurns;
@@ -217,7 +235,7 @@ export class Transcript {
   }
 
   private push(item: TranscriptItem): void {
-    if (item.kind === "user" && item.turn === undefined) item.turn = this.userTurns++;
+    if (item.kind === "user" && item.turn === undefined && !item.steer) item.turn = this.userTurns++;
     // Text never continues past a newer item (see appendText), so the bubble before it is done streaming.
     const last = this.items[this.items.length - 1];
     if (last?.kind === "agent" && last.streaming) {

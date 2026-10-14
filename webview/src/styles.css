@@ -1,11 +1,10 @@
-/* Hermes Agent panel. Colours come from the VS Code theme; the blue accent follows Nous Research's site:
-   the deep blue fills buttons, a lighter tint of it stays readable as text on a dark sidebar. */
+/* Hermes Agent panel. Colours come from the VS Code theme; the amber accent follows the Dream IDE mockup. */
 :root {
-  --accent: #8b95ff;
-  --accent-fill: #1d1db8;
-  --accent-fg: #ffffff;
-  --accent-soft: rgba(110, 120, 255, 0.14);
-  --accent-border: rgba(110, 120, 255, 0.5);
+  --accent: #f2b42c;
+  --accent-fill: #f2b42c;
+  --accent-fg: #1b1404;
+  --accent-soft: rgba(242, 180, 44, 0.12);
+  --accent-border: rgba(242, 180, 44, 0.45);
   --ok: var(--vscode-testing-iconPassed, #3fb950);
   --err: var(--vscode-errorForeground, #f85149);
   --warn: var(--vscode-editorWarning-foreground, #d29922);
@@ -20,11 +19,11 @@
 }
 
 body.vscode-light {
-  --accent: #1d1db8;
-  --accent-fill: #1d1db8;
+  --accent: #b07d00;
+  --accent-fill: #b07d00;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(29, 29, 184, 0.08);
-  --accent-border: rgba(29, 29, 184, 0.45);
+  --accent-soft: rgba(176, 125, 0, 0.08);
+  --accent-border: rgba(176, 125, 0, 0.45);
 }
 
 body.vscode-high-contrast,
@@ -93,19 +92,7 @@ kbd {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
-/* The Nous illustration, used as a mask so it takes the accent colour. */
-.header .logo {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  background: var(--accent);
-  mask-size: contain;
-  mask-repeat: no-repeat;
-  mask-position: center;
-  -webkit-mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-}
+.header .logo { flex-shrink: 0; width: 20px; height: 20px; border-radius: 5px; }
 .header .title { font-weight: 600; }
 .header .spacer, .composer-bar .spacer { flex: 1; }
 .status { display: inline-flex; align-items: center; gap: 5px; font-size: 0.88em; color: var(--muted); }
@@ -413,7 +400,7 @@ button.send {
   width: 30px;
   height: 30px;
   padding: 0;
-  border-radius: 50%;
+  border-radius: 8px;
   background: var(--accent-fill);
   color: var(--accent-fg);
   font-size: 16px;
@@ -429,13 +416,32 @@ button.stop:hover { background: var(--vscode-toolbar-hoverBackground); }
 /* ---- Phase 2: context chips & @-mentions (F-12) ----------------------------------- */
 .composer { position: relative; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
-.queue { display: flex; flex-direction: column; gap: 3px; margin: 0 0 6px; padding: 5px 8px; border: 1px dashed var(--border); border-radius: 6px; font-size: 0.9em; }
-.queue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--vscode-descriptionForeground); font-size: 0.92em; }
-.queue-item { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.queue { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; }
+.queue-head { display: flex; align-items: center; gap: 6px; padding: 0 2px 2px 4px; color: var(--muted); font-size: 0.82em; }
+.queue-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-send { flex-shrink: 0; padding: 1px 8px; border: 1px solid var(--accent-border); border-radius: 6px; color: var(--accent); font-size: 0.95em; line-height: 1.6; }
+.queue-send:hover { background: var(--accent-soft); }
+/* Each queued message is its own card, with the accent bar of a pending step. */
+.queue-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 4px 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--card));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+.queue-item::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); opacity: 0.8; }
 .queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.queue-att { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
-.queue-x { padding: 0 4px; color: var(--vscode-descriptionForeground); }
-.queue-x:hover { color: var(--vscode-foreground); }
+.queue-att { color: var(--muted); font-size: 0.85em; }
+.queue-actions { display: inline-flex; gap: 2px; opacity: 0.55; transition: opacity 0.12s; }
+.queue-item:hover .queue-actions, .queue-actions:focus-within { opacity: 1; }
+.queue-icon { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; color: var(--muted); }
+.queue-icon:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
 .chip {
   display: inline-flex;
   align-items: center;
@@ -480,6 +486,8 @@ button.stop:hover { background: var(--vscode-toolbar-hoverBackground); }
 .chips.sent { justify-content: flex-end; margin-bottom: 4px; }
 .chips.sent .chip { padding: 0 8px; cursor: pointer; color: var(--vscode-textLink-foreground); }
 .user-turn { display: flex; flex-direction: column; align-items: flex-end; }
+.steer-tag { margin-bottom: 3px; color: var(--muted); font-size: 0.8em; }
+.msg.user.steer { border-style: dashed; border-color: var(--accent-border); }
 .mentions {
   position: absolute;
   left: 8px;

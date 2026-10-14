@@ -45,6 +45,8 @@ export type TranscriptItem =
       restorable?: boolean;
       /** A terminal command ran during this turn; its effect on files is not covered by a restore. */
       ranCommands?: boolean;
+      /** Slipped into a running turn with /steer: Hermes reads it after the current tool batch. Has no turn of its own. */
+      steer?: boolean;
     }
   | { kind: "agent"; id: string; text: string; streaming: boolean; at?: number }
   /** startedAt/endedAt: first and latest chunk, for "Thought for 3s". */

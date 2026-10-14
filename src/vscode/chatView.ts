@@ -60,8 +60,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Webv
   private adopt(panel: vscode.WebviewPanel): void {
     this.panel = panel;
     panel.iconPath = {
-      light: vscode.Uri.joinPath(this.extensionUri, "media", "nous-light.png"),
-      dark: vscode.Uri.joinPath(this.extensionUri, "media", "nous-dark.png"),
+      light: vscode.Uri.joinPath(this.extensionUri, "media", "nous-tile-light.png"),
+      dark: vscode.Uri.joinPath(this.extensionUri, "media", "nous-tile-dark.png"),
     };
     this.wire(panel, () => {
       if (this.panel === panel) this.panel = undefined;

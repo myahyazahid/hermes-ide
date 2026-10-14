@@ -139,6 +139,7 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
     },
     { id: "mode", section: t(locale, "cmd.section.model"), label: t(locale, "cmd.mode"), hint: modeLabel(state.mode, locale), run: openView("modes") },
     { id: "settings", section: t(locale, "cmd.section.hermes"), label: t(locale, "cmd.settings"), run: run(onOpenSettings) },
+    { id: "tools", section: t(locale, "cmd.section.hermes"), label: t(locale, "tools.open"), run: run(() => window.dispatchEvent(new Event("hermes:tools"))) },
     { id: "rules", section: t(locale, "cmd.section.hermes"), label: t(locale, "cmd.rules"), hint: state.rules ? state.rules.files.length.toString() : undefined, run: run(() => send({ type: "openRules" })) },
     { id: "usage", section: t(locale, "cmd.section.hermes"), label: t(locale, "cmd.usage"), run: run(() => send({ type: "showUsage" })) },
     { id: "learning", section: t(locale, "cmd.section.model"), label: t(locale, "cmd.learning"), hint: state.learning?.on ? "🎓" : undefined, run: run(() => send({ type: "setLearning", on: !state.learning?.on })) },
@@ -290,29 +291,46 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
       {queued.length > 0 && (
         <div className="queue" role="list" aria-label={t(locale, "queue.title")}>
           <div className="queue-head">
-            <span>{t(locale, state.busy ? "queue.title" : "queue.waiting")}</span>
-            <button type="button" className="link-btn" onClick={() => send({ type: "sendQueued" })}>
-              {t(locale, state.busy ? "queue.sendNow" : "queue.send")}
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
+              <circle cx="8" cy="8" r="6" />
+              <path d="M8 4.8V8l2 1.4" />
+            </svg>
+            <span className="queue-label">{t(locale, state.busy ? "queue.title" : "queue.waiting")}</span>
+            <button
+              type="button"
+              className="queue-send"
+              title={state.busy ? t(locale, "queue.sendNowHint") : undefined}
+              onClick={() => send({ type: "sendQueued" })}
+            >
+              {t(locale, state.busy ? "queue.sendNow" : "queue.send")} ↑
             </button>
           </div>
           {queued.map((q) => (
             <div key={q.id} className="queue-item" role="listitem">
               <span className="queue-text" title={q.text}>{q.text}</span>
-              {q.attachments > 0 && <span className="queue-att">+{q.attachments}</span>}
-              <button
-                type="button"
-                className="link-btn"
-                onClick={() => {
-                  setText((cur) => (cur.trim() ? `${q.text}\n\n${cur}` : q.text));
-                  send({ type: "unqueue", id: q.id, edit: true });
-                  inputRef.current?.focus();
-                }}
-              >
-                {t(locale, "queue.edit")}
-              </button>
-              <button type="button" className="queue-x" aria-label={t(locale, "queue.remove")} title={t(locale, "queue.remove")} onClick={() => send({ type: "unqueue", id: q.id })}>
-                ×
-              </button>
+              {q.attachments > 0 && <span className="queue-att">📎{q.attachments}</span>}
+              <span className="queue-actions">
+                <button
+                  type="button"
+                  className="queue-icon"
+                  aria-label={t(locale, "queue.edit")}
+                  title={t(locale, "queue.edit")}
+                  onClick={() => {
+                    setText((cur) => (cur.trim() ? `${q.text}\n\n${cur}` : q.text));
+                    send({ type: "unqueue", id: q.id, edit: true });
+                    inputRef.current?.focus();
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden>
+                    <path d="M10.8 2.7 13.3 5.2 5.6 12.9 2.6 13.4 3.1 10.4z" />
+                  </svg>
+                </button>
+                <button type="button" className="queue-icon" aria-label={t(locale, "queue.remove")} title={t(locale, "queue.remove")} onClick={() => send({ type: "unqueue", id: q.id })}>
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
+                    <path d="M4 4l8 8M12 4l-8 8" />
+                  </svg>
+                </button>
+              </span>
             </div>
           ))}
         </div>

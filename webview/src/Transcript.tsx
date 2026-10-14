@@ -183,7 +183,8 @@ function UserMessage({ item, locale, busy }: { item: UserItem; locale: Locale; b
           )}
         </div>
       )}
-      <div className="msg user">{item.text}</div>
+      {item.steer && <div className="steer-tag">↪ {t(locale, "steer.tag")}</div>}
+      <div className={`msg user${item.steer ? " steer" : ""}`}>{item.text}</div>
       {item.restorable && item.turn !== undefined && (
         <button
           type="button"

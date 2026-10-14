@@ -18,6 +18,18 @@ describe("Transcript", () => {
     expect(tr.all()[1]).toMatchObject({ streaming: false });
   });
 
+  it("a steer gets a bubble but no turn, until it is promoted to a prompt of its own", () => {
+    const tr = new Transcript();
+    expect(tr.addUser("first").turn).toBe(0);
+    const steer = tr.addSteer("also check the tests");
+    expect(tr.all().at(-1)).toMatchObject({ kind: "user", steer: true });
+    expect((tr.all().at(-1) as { turn?: number }).turn).toBeUndefined();
+    expect(tr.addUser("second").turn).toBe(1);
+    expect(tr.promoteSteer(steer, "also check the tests\n\nand lint")).toEqual({ id: steer, turn: 2 });
+    expect(tr.all()[1]).toMatchObject({ steer: false, turn: 2, text: "also check the tests\n\nand lint" });
+    expect(tr.promoteSteer(steer)).toBeUndefined();
+  });
+
   it("starts a new bubble after a tool card so order is preserved", () => {
     let now = 1000;
     const tr = new Transcript(() => now);

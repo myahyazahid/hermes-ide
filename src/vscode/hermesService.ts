@@ -132,11 +132,15 @@ export class HermesService implements vscode.Disposable {
   private suppressUpdates = false;
   private seq = 0;
   /** Messages typed while a turn runs (see send). */
-  private readonly queue: { id: string; text: string; context: ContextRef[] }[] = [];
+  private readonly queue: { id: string; text: string; context: ContextRef[]; steerId?: string }[] = [];
   /** send() is between its busy check and the turn showing as busy. */
   private turnStarting = false;
   /** "Send now" stopped the running turn: the queue goes out once it has ended. */
   private sendQueueAfterStop = false;
+  /** Steers sent this turn that Hermes has not yet logged as delivered. */
+  private readonly pendingSteers: { id: string; text: string }[] = [];
+  /** Hermes answers each /steer with a "Steer queued" line; those stay out of the agent's reply. */
+  private steerAcks = 0;
   /** Every open chat view: the sidebar one and, when opened, the one in an editor tab. */
   private readonly views = new Set<(msg: HostToView) => void>();
   /** The view the user touched last; context chips go there instead of to every composer. */
@@ -540,6 +544,7 @@ export class HermesService implements vscode.Disposable {
     // Queued messages belong to the session they were typed in.
     if ("sessionId" in patch && patch.sessionId !== this.state.sessionId && this.queue.length) {
       this.queue.length = 0;
+      this.pendingSteers.length = 0;
       this.sendQueueAfterStop = false;
       patch = { ...patch, queued: [] };
     }
@@ -764,11 +769,16 @@ export class HermesService implements vscode.Disposable {
 
   // ---- conversation -------------------------------------------------------------------------
 
-  /** A message sent while a turn runs waits in the queue and goes out, merged, once the turn completes. */
-  async send(text: string, context: ContextRef[] = []): Promise<void> {
+  /**
+   * A text message sent while a turn runs is slipped into it with Hermes' /steer: the agent reads it after
+   * the current tool batch, without stopping. Messages with attachments (steer is text-only) wait in the
+   * queue instead and go out, merged, once the turn completes.
+   */
+  async send(text: string, context: ContextRef[] = [], steerId?: string): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (this.state.busy || this.turnStarting) {
+      if (this.state.busy && !context.length && !steerId) return this.steer(trimmed);
       this.queue.push({ id: `q${++this.seq}`, text: trimmed, context });
       this.publishQueue();
       return;
@@ -776,12 +786,44 @@ export class HermesService implements vscode.Disposable {
     this.turnStarting = true;
     let completed = false;
     try {
-      completed = await this.runTurn(trimmed, context);
+      completed = await this.runTurn(trimmed, context, steerId);
     } finally {
       this.turnStarting = false;
     }
+    // A steer that arrived after the agent's last tool batch has nothing to land in; Hermes drops it
+    // over ACP, so send it now as the next prompt (or keep it queued when the turn was stopped).
+    const undelivered = this.pendingSteers.splice(0);
+    if (undelivered.length) {
+      if (completed) {
+        void this.send(undelivered.map((s) => s.text).join("\n\n"), [], undelivered[0].id);
+        return;
+      }
+      this.queue.unshift(...undelivered.map((s) => ({ id: `q${++this.seq}`, text: s.text, context: [], steerId: s.id })));
+      this.publishQueue();
+    }
     // A stopped or failed turn leaves the queue for the user, unless "send now" stopped it.
     if (completed || this.sendQueueAfterStop) void this.sendQueued();
+  }
+
+  /** Slips a message into the running turn; falls back to the queue if Hermes will not take it. */
+  private async steer(text: string): Promise<void> {
+    const client = this.client;
+    const sessionId = this.state.sessionId;
+    if (!client || !sessionId) return;
+    const id = this.transcript.addSteer(text);
+    this.scheduleFlush();
+    const entry = { id, text };
+    this.pendingSteers.push(entry);
+    this.steerAcks++;
+    try {
+      await client.prompt(sessionId, [{ type: "text", text: `/steer ${text}` }]);
+    } catch (error) {
+      this.log.info(`steer failed: ${(error as Error).message}`);
+      const i = this.pendingSteers.indexOf(entry);
+      if (i >= 0) this.pendingSteers.splice(i, 1);
+      this.queue.push({ id: `q${++this.seq}`, text, context: [] });
+      this.publishQueue();
+    }
   }
 
   /** Sends everything queued as one message: right away when idle, after stopping the running turn otherwise. */
@@ -794,7 +836,8 @@ export class HermesService implements vscode.Disposable {
     this.sendQueueAfterStop = false;
     const items = this.queue.splice(0);
     this.publishQueue();
-    await this.send(items.map((q) => q.text).join("\n\n"), items.flatMap((q) => q.context));
+    // A steer already on screen keeps its bubble instead of getting a second one.
+    await this.send(items.map((q) => q.text).join("\n\n"), items.flatMap((q) => q.context), items[0].steerId);
   }
 
   private publishQueue(): void {
@@ -802,7 +845,7 @@ export class HermesService implements vscode.Disposable {
   }
 
   /** Runs one turn; true when it finished on its own (not stopped, not failed, not refused before it started). */
-  private async runTurn(trimmed: string, context: ContextRef[]): Promise<boolean> {
+  private async runTurn(trimmed: string, context: ContextRef[], steerId?: string): Promise<boolean> {
     this.updatePrivacy();
     if (this.state.privacy?.blocked) {
       this.notice("error", this.tr("privacy.blocked", this.state.privacy.blocked));
@@ -829,7 +872,8 @@ export class HermesService implements vscode.Disposable {
       this.rulesSent.delete(sessionId);
     }
 
-    const user = this.transcript.addUser(trimmed, [...ruleChips, ...context.map((c) => ({
+    // A steer Hermes never delivered keeps its bubble and becomes this turn's message.
+    const user = (steerId && this.transcript.promoteSteer(steerId, trimmed)) || this.transcript.addUser(trimmed, [...ruleChips, ...context.map((c) => ({
       label: contextLabel(c, cwd), path: c.path, kind: c.kind,
       ...(c.kind === "image" && c.data ? { image: `data:${c.mimeType ?? "image/png"};base64,${c.data}` } : {}),
     }))]);
@@ -1040,6 +1084,12 @@ export class HermesService implements vscode.Disposable {
       return;
     }
     if (this.suppressUpdates || n.sessionId !== this.state.sessionId) return;
+    const u = n.update;
+    if (this.steerAcks > 0 && u.sessionUpdate === "agent_message_chunk" && u.content.type === "text" && /^(⏩ Steer queued|⚠️ Steer failed)/.test(u.content.text)) {
+      this.steerAcks--;
+      if (u.content.text.startsWith("⚠️")) this.notice("warn", u.content.text);
+      return;
+    }
     const effects = this.transcript.apply(n.update);
     if (effects.usage) this.setState({ usage: effects.usage });
     if (effects.title) {
@@ -1052,6 +1102,8 @@ export class HermesService implements vscode.Disposable {
   /** Hermes only tells ACP clients "retrying API call after error"; the reason is in its log. */
   private onHermesLogLine(line: string): void {
     if (/Non-retryable client error|API call failed after \d+ retries/.test(line)) this.turnGaveUp = true;
+    // Logged when a steer lands after a tool batch; steers sent before it were drained together.
+    if (line.includes("Delivered /steer")) this.pendingSteers.length = 0;
     const call = parseApiCallLine(line);
     // Inline edits run in their own hidden session; their requests are not this turn's.
     if (call && this.state.busy && !(call.session && this.inlineReplies.has(call.session))) {
