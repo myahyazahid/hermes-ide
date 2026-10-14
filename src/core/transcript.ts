@@ -218,6 +218,12 @@ export class Transcript {
 
   private push(item: TranscriptItem): void {
     if (item.kind === "user" && item.turn === undefined) item.turn = this.userTurns++;
+    // Text never continues past a newer item (see appendText), so the bubble before it is done streaming.
+    const last = this.items[this.items.length - 1];
+    if (last?.kind === "agent" && last.streaming) {
+      last.streaming = false;
+      this.changed.add(last.id);
+    }
     this.items.push(item);
     this.byId.set(item.id, item);
     this.changed.add(item.id);

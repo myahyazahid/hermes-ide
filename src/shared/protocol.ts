@@ -400,6 +400,8 @@ export interface ViewState {
   onboarding?: boolean;
   /** Whether the Hermes install can be started from the panel (Windows only). */
   canInstallHermes?: boolean;
+  /** Real tokens of the running turn so far, summed from Hermes' per-request log lines. */
+  turnUsage?: { calls: number; input: number; output: number; cached: number };
   /** Messages typed while the agent works; they go out together when the turn ends. */
   queued?: QueuedView[];
 }

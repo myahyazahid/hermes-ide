@@ -97,7 +97,7 @@ export function App() {
           }}
         />
       )}
-      <Transcript items={items} locale={locale} cwd={state.cwd} busy={state.busy} />
+      <Transcript items={items} locale={locale} cwd={state.cwd} busy={state.busy} turnUsage={state.turnUsage} />
       <Composer state={state} locale={locale} inputRef={composer} chips={chips} setChips={setChips} mention={mention} onOpenSettings={() => setEndpointOpen(true)} />
     </div>
   );

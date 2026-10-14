@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PermissionAction, TranscriptItem } from "../../src/shared/protocol";
+import type { PermissionAction, TranscriptItem, ViewState } from "../../src/shared/protocol";
 import { t, type Locale, type StringKey } from "../../src/shared/strings";
 import { formatSeconds, formatTokens, shortPath, splitPath } from "./format";
 import { send } from "./host";
@@ -17,9 +17,10 @@ interface Props {
   locale: Locale;
   cwd?: string;
   busy: boolean;
+  turnUsage?: ViewState["turnUsage"];
 }
 
-export function Transcript({ items, locale, cwd, busy }: Props) {
+export function Transcript({ items, locale, cwd, busy, turnUsage }: Props) {
   const turns = useMemo(() => groupTurns(items), [items]);
   const end = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -59,7 +60,7 @@ export function Transcript({ items, locale, cwd, busy }: Props) {
                 {turn.steps.map((step) => (
                   <Step key={step.id} item={step} locale={locale} cwd={cwd} active={busy && step.id === lastId} />
                 ))}
-                {waiting && <WaitingRow items={items} locale={locale} />}
+                {waiting && <WaitingRow items={items} locale={locale} usage={turnUsage} />}
               </div>
             )}
           </div>
@@ -80,7 +81,7 @@ function groupTurns(items: TranscriptItem[]): Turn[] {
   return turns;
 }
 
-/** ACP reports no per-reply token count, so estimate from streamed text (~4 chars per token). */
+/** Fallback before Hermes logs its first request of the turn: an estimate from streamed text (~4 chars per token). */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
@@ -112,7 +113,7 @@ function pickVerb(prev?: string): string {
 }
 
 /** Claude-style "Mulling…" row: shown for the whole turn unless the agent is waiting on a permission. */
-function WaitingRow({ items, locale }: { items: TranscriptItem[]; locale: Locale }) {
+function WaitingRow({ items, locale, usage }: { items: TranscriptItem[]; locale: Locale; usage?: ViewState["turnUsage"] }) {
   const blocked = items.some((i) => i.kind === "permission" && i.state === "pending");
   const lastUser = items.map((i) => i.kind).lastIndexOf("user");
   const streamed = items.slice(lastUser + 1).reduce((n, i) => n + (i.kind === "agent" || i.kind === "thought" ? estimateTokens(i.text) : 0), 0);
@@ -139,7 +140,13 @@ function WaitingRow({ items, locale }: { items: TranscriptItem[]; locale: Locale
       <span key={verb} className="waiting-verb">{verb}…</span>
       <span className="waiting-meta">
         ({formatSeconds(now - since, locale)}
-        {streamed > 0 && <> · ↓ {tokenLabel(streamed, locale)}</>})
+        {usage && usage.calls > 0 ? (
+          <span title={t(locale, "tokens.live", usage.calls, formatTokens(usage.cached))}>
+            {" · ↑ "}{formatTokens(usage.input)}{" · ↓ "}{formatTokens(usage.output)}
+          </span>
+        ) : (
+          streamed > 0 && <> · ↓ {tokenLabel(streamed, locale)}</>
+        )})
       </span>
     </div>
   );

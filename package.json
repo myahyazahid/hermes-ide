@@ -401,6 +401,11 @@
           "default": "ui",
           "markdownDescription": "%cfg.agentLanguage%"
         },
+        "hermes.narrateSteps": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%cfg.narrateSteps%"
+        },
         "hermes.learning.level": {
           "type": "string",
           "enum": [

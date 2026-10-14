@@ -37,6 +37,7 @@ import { sanitizeMcpServers, toAcpMcpServers, validateMcpServer, type McpServerS
 import type { McpHttpServer } from "../core/mcpHttpServer";
 import { cancelled, parsePermission, pickOption, selected, type ParsedPermission } from "../core/permission";
 import { parseProviderError, providerErrorKind } from "../core/providerError";
+import { addCall, parseApiCallLine } from "../core/apiCallLog";
 import { HERMES_PROFILE_ID, toEndpoint } from "../core/profiles";
 import { parseSessionTime } from "../core/time";
 import { Transcript, transcriptToMarkdown } from "../core/transcript";
@@ -72,6 +73,8 @@ const MODES: readonly AgentMode[] = ["manual", "acceptEdits", "plan", "ask", "au
 const workspaceNote = (cwd: string) =>
   `[IDE] The user's project is the VS Code workspace at ${cwd}; relative paths resolve there. ` +
   "Create and edit the files you make for the user inside this workspace. The Hermes scratch directory is only for throwaway probes, never for deliverables.";
+const NARRATE_NOTE =
+  "[IDE] Before each tool call or group of tool calls, write one short sentence to the user saying what you are about to do and why, in the user's language. Keep it to one line; do not repeat it after the tool runs.";
 const ASK_NOTE =
   "[Ask mode] Answer the question. This is read-only: you may read and search files, but do not edit files and do not run terminal commands or code.";
 const PLAN_NOTE =
@@ -121,6 +124,8 @@ export class HermesService implements vscode.Disposable {
   private readonly notesForNextPrompt: string[] = [];
   /** Sessions that already got the workspace note (see send). */
   private readonly briefedSessions = new Set<string>();
+  /** Sessions that already got the narrate-steps note. */
+  private readonly narratedSessions = new Set<string>();
   private readonly hookApprovals = new Map<string, number>();
   private readonly inlineReplies = new Map<string, string>();
   private readonly reportedErrors = new Set<string>();
@@ -843,13 +848,18 @@ export class HermesService implements vscode.Disposable {
       this.briefedSessions.add(this.state.sessionId);
       notes.unshift(workspaceNote(cwd));
     }
+    // Narrate steps: some models (Gemini Flash) call tools without a word in between.
+    if (vscode.workspace.getConfiguration("hermes").get<boolean>("narrateSteps", true) && !this.narratedSessions.has(sessionId)) {
+      this.narratedSessions.add(sessionId);
+      ruleNotes.push(NARRATE_NOTE);
+    }
     // Rules go right after the workspace note, before mode notes and anything queued.
     notes.splice(notes[0]?.startsWith("[IDE] The user's project") ? 1 : 0, 0, ...ruleNotes);
     const body = notes.length ? `${notes.join("\n")}\n\n${trimmed}` : trimmed;
     if (context.some((c) => c.kind === "folder")) await this.files.ensure();
     const expanded = await this.expandCodebase(trimmed, context);
     const blocks = buildPromptBlocks(body, expanded, { cwd, folderListing: (f) => this.files.listFolder(f), readFile: readContextFile });
-    this.setState({ busy: true });
+    this.setState({ busy: true, turnUsage: undefined });
     this.sessionsChanged.fire();
     const client = this.client;
     await this.applyRouting(sessionId, trimmed, context); // a model switch can take seconds, so only once the turn shows as running
@@ -1038,7 +1048,13 @@ export class HermesService implements vscode.Disposable {
 
   /** Hermes only tells ACP clients "retrying API call after error"; the reason is in its log. */
   private onHermesLogLine(line: string): void {
-    if (/Non-retryable client error|API call failed after d+ retries/.test(line)) this.turnGaveUp = true;
+    if (/Non-retryable client error|API call failed after \d+ retries/.test(line)) this.turnGaveUp = true;
+    const call = parseApiCallLine(line);
+    // Inline edits run in their own hidden session; their requests are not this turn's.
+    if (call && this.state.busy && !(call.session && this.inlineReplies.has(call.session))) {
+      this.setState({ turnUsage: addCall(this.state.turnUsage, call) });
+      return;
+    }
     if (!line.includes("Error code:")) return;
     const err = parseProviderError(line);
     if (!err) return;

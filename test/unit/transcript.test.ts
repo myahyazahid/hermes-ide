@@ -28,6 +28,9 @@ describe("Transcript", () => {
     tr.apply(text("agent_message_chunk", "Done."));
     const items = tr.all();
     expect(items.map((i) => i.kind)).toEqual(["agent", "tool", "agent"]);
+    // Only the newest bubble still shows the streaming caret.
+    expect(items[0]).toMatchObject({ streaming: false });
+    expect(items[2]).toMatchObject({ streaming: true });
     expect(items[1]).toMatchObject({ status: "completed", startedAt: 1000, endedAt: 1200, paths: ["/w/a.ts"], toolKind: "read" });
   });
 
