@@ -439,6 +439,27 @@ button.stop:hover { background: var(--vscode-toolbar-hoverBackground); }
 .chip.selection { border-color: var(--accent-border); }
 .chip.image { gap: 6px; padding-left: 3px; }
 .chips.sent .chip.image { cursor: default; color: var(--vscode-foreground); }
+.chips.sent button.chip.image { cursor: zoom-in; gap: 6px; padding-left: 3px; }
+.chips.sent button.chip.image:hover { border-color: var(--accent-border); }
+.chip button.chip-open { display: inline-flex; align-items: center; gap: 6px; padding: 0 2px 0 0; color: var(--vscode-foreground); cursor: zoom-in; background: none; }
+.chip button.chip-open:hover { background: none; color: var(--vscode-textLink-foreground); }
+.image-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.78);
+  cursor: zoom-out;
+}
+.image-preview img { max-width: 100%; max-height: calc(100% - 40px); object-fit: contain; border-radius: 6px; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5); cursor: default; }
+.image-preview-bar { display: flex; align-items: center; gap: 10px; max-width: 100%; color: #fff; cursor: default; }
+.image-preview-bar .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.image-preview-bar button { color: #fff; font-size: 1.3em; line-height: 1; padding: 2px 8px; }
 .chip-thumb { width: 16px; height: 16px; border-radius: 4px; object-fit: cover; }
 .chip-dim { color: var(--muted); font-size: 0.92em; margin-right: 2px; }
 .chips.sent { justify-content: flex-end; margin-bottom: 4px; }

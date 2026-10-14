@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ContextRef, HostToView, MentionItem, SessionView, TranscriptItem, ViewState } from "../../src/shared/protocol";
 import { t, type Locale, type StringKey } from "../../src/shared/strings";
 import { Composer } from "./Composer";
+import { ImagePreview } from "./ImagePreview";
 import { Onboarding, showsOnboarding } from "./Onboarding";
 import { send } from "./host";
 import { SessionBar } from "./Sessions";
@@ -99,6 +100,7 @@ export function App() {
       )}
       <Transcript items={items} locale={locale} cwd={state.cwd} busy={state.busy} turnUsage={state.turnUsage} />
       <Composer state={state} locale={locale} inputRef={composer} chips={chips} setChips={setChips} mention={mention} onOpenSettings={() => setEndpointOpen(true)} />
+      <ImagePreview locale={locale} />
     </div>
   );
 }

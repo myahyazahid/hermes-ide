@@ -6,6 +6,7 @@ import { MenuList, ModeIcon, MODES, modeLabel, nextMode, PlusIcon, SlashIcon, ty
 import { currentModelName, ModelPicker } from "./ModelPicker";
 import { formatTokens, relativePath } from "./format";
 import { send } from "./host";
+import { showImage } from "./ImagePreview";
 
 interface Props {
   state: ViewState;
@@ -322,9 +323,20 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
             const label = chipLabel(c, state.cwd);
             return (
               <span key={`${c.kind}:${c.path}:${c.startLine ?? ""}`} className={`chip ${c.kind}`} title={c.path}>
-                {c.kind === "image" && c.data && <img className="chip-thumb" src={`data:${c.mimeType};base64,${c.data}`} alt="" />}
-                <span className="mono">{c.kind === "folder" ? "▸ " : c.kind === "codebase" ? "✦ " : ""}{label}</span>
-                {c.kind === "image" && c.width && c.height && <span className="chip-dim">{c.width}×{c.height}</span>}
+                {c.kind === "image" && c.data ? (
+                  <button
+                    type="button"
+                    className="chip-open"
+                    title={t(locale, "image.open")}
+                    onClick={() => showImage(`data:${c.mimeType};base64,${c.data}`, label)}
+                  >
+                    <img className="chip-thumb" src={`data:${c.mimeType};base64,${c.data}`} alt="" />
+                    <span className="mono">{label}</span>
+                    {c.width && c.height && <span className="chip-dim">{c.width}×{c.height}</span>}
+                  </button>
+                ) : (
+                  <span className="mono">{c.kind === "folder" ? "▸ " : c.kind === "codebase" ? "✦ " : ""}{label}</span>
+                )}
                 <button type="button" aria-label={t(locale, "composer.removeChip", label)} onClick={() => setChips((prev) => prev.filter((_, j) => j !== i))}>
                   ×
                 </button>

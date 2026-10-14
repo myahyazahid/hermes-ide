@@ -3,6 +3,7 @@ import type { PermissionAction, TranscriptItem, ViewState } from "../../src/shar
 import { t, type Locale, type StringKey } from "../../src/shared/strings";
 import { formatSeconds, formatTokens, shortPath, splitPath } from "./format";
 import { send } from "./host";
+import { showImage } from "./ImagePreview";
 import { renderMarkdown } from "./markdown";
 
 type ToolItem = Extract<TranscriptItem, { kind: "tool" }>;
@@ -160,9 +161,16 @@ function UserMessage({ item, locale, busy }: { item: UserItem; locale: Locale; b
         <div className="chips sent">
           {item.context.map((c) =>
             c.kind === "image" ? (
-              <span key={c.label} className="chip image">
-                <span className="mono">▣ {c.label}</span>
-              </span>
+              c.image ? (
+                <button key={c.label} type="button" className="chip image" title={t(locale, "image.open")} onClick={() => showImage(c.image!, c.label)}>
+                  <img className="chip-thumb" src={c.image} alt="" />
+                  <span className="mono">{c.label}</span>
+                </button>
+              ) : (
+                <span key={c.label} className="chip image">
+                  <span className="mono">▣ {c.label}</span>
+                </span>
+              )
             ) : c.kind === "rules" ? (
               <button key={`rules:${c.label}`} type="button" className="chip rules" title={t(locale, "rules.chipTitle", c.label)} onClick={() => send({ type: "openFile", path: c.path })}>
                 <span className="mono">§ {c.label}</span>

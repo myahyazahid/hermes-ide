@@ -37,7 +37,8 @@ export type TranscriptItem =
       id: string;
       text: string;
       at?: number;
-      context?: { label: string; path: string; kind?: ContextRef["kind"] | "rules" }[];
+      /** `image` is a data: URL of an attached picture, so the chip can show it. */
+      context?: { label: string; path: string; kind?: ContextRef["kind"] | "rules"; image?: string }[];
       /** 0-based count of user messages in the session; the key checkpoints are stored under. */
       turn?: number;
       /** The agent changed files during this turn and "Restore to here" can put them back. */

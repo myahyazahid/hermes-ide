@@ -829,7 +829,10 @@ export class HermesService implements vscode.Disposable {
       this.rulesSent.delete(sessionId);
     }
 
-    const user = this.transcript.addUser(trimmed, [...ruleChips, ...context.map((c) => ({ label: contextLabel(c, cwd), path: c.path, kind: c.kind }))]);
+    const user = this.transcript.addUser(trimmed, [...ruleChips, ...context.map((c) => ({
+      label: contextLabel(c, cwd), path: c.path, kind: c.kind,
+      ...(c.kind === "image" && c.data ? { image: `data:${c.mimeType ?? "image/png"};base64,${c.data}` } : {}),
+    }))]);
     this.currentTurn = user.turn;
     this.turnStartedAt = Date.now();
     this.checkpoints.begin(sessionId, user.turn, trimmed);
