@@ -98,20 +98,23 @@ export function Transcript({ items, locale, cwd, busy, turnUsage }: Props) {
 
 function PinnedPrompt({ item, locale, onJump }: { item: UserItem; locale: Locale; onJump: () => void }) {
   return (
-    <button type="button" className="pinned-prompt" title={t(locale, "prompt.jump")} onClick={onJump}>
-      {item.at !== undefined && <span className="stamp">{clockTime(item.at, locale)}</span>}
-      {item.context && item.context.length > 0 && (
-        <span className="pinned-chips">
-          {item.context.map((c) => (
-            <span key={`${c.kind}:${c.label}`} className="chip">
-              {c.image ? <img className="chip-thumb" src={c.image} alt="" /> : null}
-              <span className="mono">{c.kind === "image" || c.kind === "rules" ? c.label : `@${c.label}`}</span>
-            </span>
-          ))}
-        </span>
-      )}
-      <span className="pinned-text">{item.text.replace(/\s+/g, " ").trim()}</span>
-    </button>
+    <div className="pinned-bar">
+      <button type="button" className="pinned-prompt" title={t(locale, "prompt.jump")} onClick={onJump}>
+        <span className="pinned-icon" aria-hidden>↑</span>
+        {item.at !== undefined && <span className="stamp">{clockTime(item.at, locale)}</span>}
+        {item.context && item.context.length > 0 && (
+          <span className="pinned-chips">
+            {item.context.map((c) => (
+              <span key={`${c.kind}:${c.label}`} className="chip">
+                {c.image ? <img className="chip-thumb" src={c.image} alt="" /> : null}
+                <span className="mono">{c.kind === "image" || c.kind === "rules" ? c.label : `@${c.label}`}</span>
+              </span>
+            ))}
+          </span>
+        )}
+        <span className="pinned-text">{item.text.replace(/\s+/g, " ").trim()}</span>
+      </button>
+    </div>
   );
 }
 

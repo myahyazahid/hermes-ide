@@ -170,29 +170,39 @@ input, select, textarea {
 .transcript.empty { justify-content: center; }
 .transcript-wrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 /* The user message of the turn being read, pinned on top once its bubble scrolled away; a click jumps back to it. */
-.pinned-prompt {
+/* A frosted strip under the card so it floats apart from the header above and the transcript behind. */
+.pinned-bar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   z-index: 5;
+  padding: 6px 10px 8px;
+  background: color-mix(in srgb, var(--vscode-sideBar-background) 60%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.pinned-prompt {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  width: 100%;
   margin: 0;
-  padding: 5px 12px;
-  border: none;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
   background: var(--vscode-input-background);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   color: var(--vscode-foreground);
   font: inherit;
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
 }
-.pinned-prompt:hover { background: var(--vscode-input-background); border-bottom-color: var(--accent-border); }
+.pinned-prompt:hover { background: var(--vscode-input-background); border-color: var(--accent-border); border-left-color: var(--accent); }
+.pinned-icon { flex-shrink: 0; color: var(--accent); font-weight: 700; line-height: 1.4; transition: transform 0.15s; }
+.pinned-prompt:hover .pinned-icon { transform: translateY(-2px); }
 .pinned-prompt .stamp { order: 3; flex-shrink: 0; margin: 0; line-height: 1.75; }
 .pinned-chips { display: flex; gap: 4px; flex-shrink: 0; max-width: 40%; overflow: hidden; }
 .pinned-chips .chip { display: inline-flex; align-items: center; flex-shrink: 0; gap: 6px; padding: 0 8px 0 3px; border-radius: 999px; color: var(--vscode-textLink-foreground); }
