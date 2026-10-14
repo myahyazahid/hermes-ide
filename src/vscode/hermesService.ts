@@ -28,7 +28,7 @@ import { loadMemory, memoryPath, saveMemory as saveMemoryFile } from "../core/me
 import { inspectSkill, installSkill, listInstalledSkills, searchSkills, uninstallSkill, type SkillsContext } from "../core/skills";
 import { privacyReportMarkdown } from "../core/privacyReport";
 import { classifyPrompt, modelForTier, parseRoutingSettings, worthFallback, type RoutingSettings } from "../core/routing";
-import { RULES_REMOVED_NOTE, rulesNote } from "../core/rules";
+import { RULES_REMOVED_NOTE, STEER_NOTE, rulesNote } from "../core/rules";
 import { fromAcpUsage } from "../core/usage";
 import { applyHunks, computeHunks, diffStat, sameText } from "../core/hunks";
 import { embed } from "../core/embeddings";
@@ -816,7 +816,7 @@ export class HermesService implements vscode.Disposable {
     this.pendingSteers.push(entry);
     this.steerAcks++;
     try {
-      await client.prompt(sessionId, [{ type: "text", text: `/steer ${text}` }]);
+      await client.prompt(sessionId, [{ type: "text", text: `/steer ${text}\n\n${STEER_NOTE}` }]);
     } catch (error) {
       this.log.info(`steer failed: ${(error as Error).message}`);
       const i = this.pendingSteers.indexOf(entry);

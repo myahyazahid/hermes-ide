@@ -97,9 +97,17 @@ export function rulesNote(rules: ProjectRules): string {
 /** Sent when the rules file disappeared after the agent was already given its content. */
 export const RULES_REMOVED_NOTE = "<project-rules removed=\"true\">The project rules from earlier in this conversation no longer apply.</project-rules>";
 
-/** Removes IDE-injected rules blocks from replayed user messages, including an unfinished one mid-stream. */
+/**
+ * Rides along with every /steer. Hermes delivers the steer after the tool batch, but models tend to just keep
+ * working and only answer it in their final reply; Claude-style steering answers it right away.
+ */
+export const STEER_NOTE = "<steer-note>The user sent this while you were working. In your very next message, before any further tool call, respond to it in one or two sentences (answer it, acknowledge it, or say how you are changing course), then continue the task. Do not hold your answer until the end.</steer-note>";
+
+/** Removes IDE-injected rules blocks and steer notes from replayed user messages, including an unfinished one mid-stream. */
 export function stripProjectRules(text: string): string {
-  return text.replace(/<project-rules\b[\s\S]*?(?:<\/project-rules>\s*|$)/g, "");
+  return text
+    .replace(/<project-rules\b[\s\S]*?(?:<\/project-rules>\s*|$)/g, "")
+    .replace(/\s*<steer-note>[\s\S]*?(?:<\/steer-note>|$)/g, "");
 }
 
 export const RULES_TEMPLATE: Record<"id" | "en", string> = {

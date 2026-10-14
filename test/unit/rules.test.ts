@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { assembleRules, loadProjectRules, MAX_RULES_BYTES, RULES_TEMPLATE, rulesNote, stripProjectRules } from "../../src/core/rules";
+import { assembleRules, loadProjectRules, MAX_RULES_BYTES, RULES_TEMPLATE, rulesNote, STEER_NOTE, stripProjectRules } from "../../src/core/rules";
 
 describe("assembleRules", () => {
   it("returns undefined for nothing or whitespace", () => {
@@ -90,6 +90,11 @@ describe("rulesNote and stripProjectRules", () => {
 
   it("also hides a block that has not finished streaming", () => {
     expect(stripProjectRules("<project-rules source=\"x\">half a rule")).toBe("");
+  });
+
+  it("hides the note sent along with a steer, finished or still streaming", () => {
+    expect(stripProjectRules(`call me Yahya\n\n${STEER_NOTE}`)).toBe("call me Yahya");
+    expect(stripProjectRules("call me Yahya\n\n<steer-note>The user sent")).toBe("call me Yahya");
   });
 });
 
