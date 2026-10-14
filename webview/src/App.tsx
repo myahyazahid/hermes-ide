@@ -9,6 +9,7 @@ import { SessionBar } from "./Sessions";
 import { SettingsCard, type PresetDraft } from "./SettingsCard";
 import { StackBanner, ToolsCard } from "./ToolsCard";
 import { Transcript } from "./Transcript";
+import nousMask from "./nous-mask.png";
 
 export function App() {
   const [locale, setLocale] = useState<Locale>("en");
@@ -128,7 +129,7 @@ function statusKey(state: ViewState): StringKey {
 function Header({ state, locale, onSettings, onTools, toolsOpen }: { state: ViewState; locale: Locale; onSettings(): void; onTools(): void; toolsOpen: boolean }) {
   return (
     <header className="header">
-      <span className="logo" aria-hidden>✦</span>
+      <span className="logo" aria-hidden style={{ maskImage: `url(${nousMask})`, WebkitMaskImage: `url(${nousMask})` }} />
       <span className="title">{t(locale, "header.title")}</span>
       <span className={`status ${state.phase}${state.busy ? " busy" : ""}`}>
         <span className="dot" aria-hidden />

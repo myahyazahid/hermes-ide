@@ -33,6 +33,7 @@ const builds = [
     format: "iife",
     target: "es2022",
     jsx: "automatic",
+    loader: { ".png": "dataurl" },
     define: { "process.env.NODE_ENV": JSON.stringify(production ? "production" : "development") },
   },
 ];

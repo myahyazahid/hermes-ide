@@ -1,9 +1,11 @@
-/* Hermes Agent panel. Colours come from the VS Code theme; the amber accent follows the Dream IDE mockup. */
+/* Hermes Agent panel. Colours come from the VS Code theme; the blue accent follows Nous Research's site:
+   the deep blue fills buttons, a lighter tint of it stays readable as text on a dark sidebar. */
 :root {
-  --accent: #f2b42c;
-  --accent-fg: #1b1404;
-  --accent-soft: rgba(242, 180, 44, 0.12);
-  --accent-border: rgba(242, 180, 44, 0.45);
+  --accent: #8b95ff;
+  --accent-fill: #1d1db8;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(110, 120, 255, 0.14);
+  --accent-border: rgba(110, 120, 255, 0.5);
   --ok: var(--vscode-testing-iconPassed, #3fb950);
   --err: var(--vscode-errorForeground, #f85149);
   --warn: var(--vscode-editorWarning-foreground, #d29922);
@@ -18,10 +20,11 @@
 }
 
 body.vscode-light {
-  --accent: #b07d00;
+  --accent: #1d1db8;
+  --accent-fill: #1d1db8;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(176, 125, 0, 0.08);
-  --accent-border: rgba(176, 125, 0, 0.45);
+  --accent-soft: rgba(29, 29, 184, 0.08);
+  --accent-border: rgba(29, 29, 184, 0.45);
 }
 
 body.vscode-high-contrast,
@@ -64,7 +67,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 1px;
 }
-button.primary { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button.primary { background: var(--accent-fill); color: var(--accent-fg); font-weight: 600; }
 button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 button.secondary { border-color: var(--border); background: var(--card); }
 button.secondary:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground); }
@@ -90,7 +93,19 @@ kbd {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
-.header .logo { color: var(--accent); font-size: 16px; }
+/* The Nous illustration, used as a mask so it takes the accent colour. */
+.header .logo {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
 .header .title { font-weight: 600; }
 .header .spacer, .composer-bar .spacer { flex: 1; }
 .status { display: inline-flex; align-items: center; gap: 5px; font-size: 0.88em; color: var(--muted); }
@@ -399,7 +414,7 @@ button.send {
   height: 30px;
   padding: 0;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: var(--accent-fg);
   font-size: 16px;
   font-weight: 700;

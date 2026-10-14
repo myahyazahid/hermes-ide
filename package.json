@@ -30,14 +30,14 @@
         {
           "id": "hermes-ide",
           "title": "Hermes IDE",
-          "icon": "media/hermes.svg"
+          "icon": "media/nous.png"
         }
       ],
       "secondarySidebar": [
         {
           "id": "hermes-ide-secondary",
           "title": "Hermes",
-          "icon": "media/hermes.svg",
+          "icon": "media/nous.png",
           "when": "!hermes.doesNotSupportSecondarySidebar"
         }
       ]
@@ -76,8 +76,8 @@
         "title": "%cmd.openInEditor%",
         "category": "Hermes",
         "icon": {
-          "light": "media/hermes-light.svg",
-          "dark": "media/hermes-dark.svg"
+          "light": "media/nous-light.png",
+          "dark": "media/nous-dark.png"
         }
       },
       {
