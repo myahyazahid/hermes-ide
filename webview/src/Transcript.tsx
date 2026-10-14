@@ -110,7 +110,7 @@ function PinnedPrompt({ item, locale, onJump }: { item: UserItem; locale: Locale
           ))}
         </span>
       )}
-      <span className="pinned-text">{item.text}</span>
+      <span className="pinned-text">{item.text.replace(/\s+/g, " ").trim()}</span>
     </button>
   );
 }

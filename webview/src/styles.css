@@ -172,36 +172,39 @@ input, select, textarea {
 /* The user message of the turn being read, pinned on top once its bubble scrolled away; a click jumps back to it. */
 .pinned-prompt {
   position: absolute;
-  top: 6px;
-  left: 12px;
-  right: 12px;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 5;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 5px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   background: var(--vscode-input-background);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
   color: var(--vscode-foreground);
   font: inherit;
+  line-height: 1.4;
   text-align: left;
   cursor: pointer;
 }
-.pinned-prompt:hover { border-color: var(--accent-border); background: var(--vscode-input-background); }
-.pinned-prompt .stamp { align-self: flex-end; margin: 0; }
-.pinned-chips { display: flex; gap: 4px; overflow: hidden; }
+.pinned-prompt:hover { background: var(--vscode-input-background); border-bottom-color: var(--accent-border); }
+.pinned-prompt .stamp { order: 3; flex-shrink: 0; margin: 0; line-height: 1.75; }
+.pinned-chips { display: flex; gap: 4px; flex-shrink: 0; max-width: 40%; overflow: hidden; }
 .pinned-chips .chip { display: inline-flex; align-items: center; flex-shrink: 0; gap: 6px; padding: 0 8px 0 3px; border-radius: 999px; color: var(--vscode-textLink-foreground); }
 .pinned-text {
+  flex: 1;
+  min-width: 0;
   font-weight: 500;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
 }
 .empty-state { text-align: center; color: var(--muted); padding: 0 12px; }

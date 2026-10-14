@@ -12,8 +12,8 @@ Ekstensi VS Code yang menjalankan [Hermes Agent](https://hermes-agent.nousresear
 
 ```powershell
 npm install
-npm run package          # menghasilkan hermes-ide-0.7.0.vsix
-code --install-extension hermes-ide-0.7.0.vsix
+npm run package          # menghasilkan hermes-ide-0.8.0.vsix
+code --install-extension hermes-ide-0.8.0.vsix
 ```
 
 Buka folder proyek, lalu klik ikon ✦ **Hermes** di activity bar, atau buka tab **Hermes** di Secondary Side Bar (grup yang sama dengan Chat / Codex / Claude Code; VS Code 1.106+). Tombol Hermes di toolbar editor membukanya sebagai tab editor. Semuanya menampilkan percakapan yang sama. Hermes dijalankan saat panel dibuka dan dihentikan saat VS Code ditutup.
