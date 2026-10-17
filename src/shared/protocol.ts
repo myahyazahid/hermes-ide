@@ -187,6 +187,10 @@ export interface IndexView {
 /** Who approves what (Claude-style modes); applied by the IDE, Hermes itself stays in "default". */
 export type AgentMode = "manual" | "acceptEdits" | "plan" | "ask" | "auto" | "superAuto";
 
+/** How long the model thinks before answering: Hermes' `agent.reasoning_effort`, low to high on the slider. */
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORTS)[number];
+
 /** Automatic model routing settings (phase 6). */
 export interface RoutingView {
   enabled: boolean;
@@ -372,6 +376,8 @@ export interface UsageView {
 export interface ViewState {
   phase: Phase;
   mode: AgentMode;
+  /** The reasoning effort this panel's session runs with. */
+  effort?: Effort;
   phaseDetail?: string;
   /** Workspace folder Hermes runs in (F-03); used to show relative paths. */
   cwd?: string;
@@ -456,6 +462,8 @@ export interface SessionView {
   /** Epoch ms of the last activity, if Hermes reported it. */
   updatedAt?: number;
   current: boolean;
+  /** Open in another chat panel: locked here until that panel moves on or closes. */
+  elsewhere?: boolean;
 }
 
 export interface ProfileInput {
@@ -479,6 +487,7 @@ export type ViewToHost =
   /** Composer "+" / "/attach": file picker, picked files come back as addContext. */
   | { type: "attachFile" }
   | { type: "setMode"; mode: AgentMode }
+  | { type: "setEffort"; effort: Effort }
   | { type: "exportConversation" }
   | { type: "listSessions"; requestId: number }
   | { type: "openSession"; id: string; title?: string }

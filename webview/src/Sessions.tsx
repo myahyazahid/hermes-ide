@@ -57,6 +57,7 @@ export function SessionBar({ state, locale, items, sessions }: Props) {
   };
 
   const choose = (s: SessionView) => {
+    if (s.elsewhere) return; // locked: another panel runs it
     setOpen(false);
     if (!s.current) send({ type: "openSession", id: s.id, title: s.title || undefined });
   };
@@ -168,11 +169,29 @@ export function SessionBar({ state, locale, items, sessions }: Props) {
             {shown.map((s, i) => {
               const label = s.title || t(locale, "sessions.untitled");
               return (
-                <li key={s.id} role="option" aria-selected={i === active} className={`${i === active ? "on" : ""}${s.current ? " current" : ""}`}>
-                  <button type="button" className="history-open" title={label} onMouseEnter={() => setActive(i)} onClick={() => choose(s)}>
+                <li
+                  key={s.id}
+                  role="option"
+                  aria-selected={i === active}
+                  aria-disabled={s.elsewhere || undefined}
+                  className={`${i === active ? "on" : ""}${s.current ? " current" : ""}${s.elsewhere ? " elsewhere" : ""}`}
+                >
+                  <button
+                    type="button"
+                    className="history-open"
+                    title={s.elsewhere ? `${label}\n${t(locale, "sessions.lockedElsewhere")}` : label}
+                    onMouseEnter={() => setActive(i)}
+                    onClick={() => choose(s)}
+                  >
                     <span className="history-title">{label}</span>
                     <span className="history-when">
-                      {s.current && state.busy ? <span className="spinner" aria-label={t(locale, "sessions.running")} /> : compactTime(s.updatedAt, locale)}
+                      {s.elsewhere ? (
+                        <span className="history-lock">🔒 {t(locale, "sessions.elsewhere")}</span>
+                      ) : s.current && state.busy ? (
+                        <span className="spinner" aria-label={t(locale, "sessions.running")} />
+                      ) : (
+                        compactTime(s.updatedAt, locale)
+                      )}
                     </span>
                   </button>
                   <button
@@ -180,6 +199,7 @@ export function SessionBar({ state, locale, items, sessions }: Props) {
                     className="history-delete"
                     title={t(locale, "sessions.delete")}
                     aria-label={`${t(locale, "sessions.delete")}: ${label}`}
+                    disabled={s.elsewhere}
                     onClick={() => {
                       const id = nextRequestId++;
                       setRequestId(id);

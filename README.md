@@ -12,11 +12,13 @@ Ekstensi VS Code yang menjalankan [Hermes Agent](https://hermes-agent.nousresear
 
 ```powershell
 npm install
-npm run package          # menghasilkan hermes-ide-0.8.0.vsix
-code --install-extension hermes-ide-0.8.0.vsix
+npm run package          # menghasilkan hermes-ide-0.11.0.vsix
+code --install-extension hermes-ide-0.11.0.vsix
 ```
 
-Buka folder proyek, lalu klik ikon ✦ **Hermes** di activity bar, atau buka tab **Hermes** di Secondary Side Bar (grup yang sama dengan Chat / Codex / Claude Code; VS Code 1.106+). Tombol Hermes di toolbar editor membukanya sebagai tab editor. Semuanya menampilkan percakapan yang sama. Hermes dijalankan saat panel dibuka dan dihentikan saat VS Code ditutup.
+Buka folder proyek, lalu klik ikon ✦ **Hermes** di activity bar, atau buka tab **Hermes** di Secondary Side Bar (grup yang sama dengan Chat / Codex / Claude Code; VS Code 1.106+). Tombol Hermes di toolbar editor membuka tab editor baru setiap kali diklik. Seperti Claude Code, **setiap panel punya sesi sendiri**: proses Hermes, percakapan, mode, model, dan tombol Stop-nya terpisah, jadi beberapa pekerjaan bisa jalan bersamaan. Riwayat sesi tetap satu: panel mana pun bisa membuka sesi lama dari ikon jam. Sesi yang sedang terbuka di panel lain ditandai 🔒 dan tidak bisa dibuka atau dihapus dari panel lain sampai panel itu pindah sesi atau ditutup. Hermes dijalankan saat panel dibuka dan dihentikan saat panelnya ditutup atau VS Code ditutup.
+
+Perintah yang tidak terikat panel (status bar, **Hermes: Stop**, **Add to Chat**, tree **Agent Sessions**) berlaku untuk panel yang terakhir dipakai. Setiap panel adalah satu proses Hermes, jadi memori dan pemakaian model naik sesuai jumlah panel yang aktif. Mengganti profil endpoint me-restart Hermes di semua panel. Sesi baru, di panel mana pun, memakai model yang terakhir kamu pilih untuk profil endpoint itu (pilihan otomatis dari routing tidak dihitung).
 
 Atau pakai **IDE mandiri** (installer Windows yang sudah memuat ekstensi ini): lihat [IDE mandiri (Fase 4)](#ide-mandiri-fase-4).
 
@@ -100,7 +102,11 @@ Mode menentukan apa yang disetujui otomatis. Mode diterapkan oleh ekstensi; Herm
 | **Plan** | Ditolak otomatis | Ditanya | Pesanmu diberi instruksi untuk menjelajahi kode dan menyusun rencana tanpa mengubah apa pun |
 | **Ask** | Ditolak otomatis | Ditolak otomatis, termasuk yang ada di daftar izinkan selalu | Tanya-jawab baca-saja ala Cursor; agent tetap boleh membaca dan mencari file |
 | **Auto** | Langsung diterapkan | Langsung jalan, kecuali yang berisiko | |
-| **Super Auto** | Langsung diterapkan, termasuk di luar workspace dan file yang belum disimpan | Langsung jalan, termasuk yang berisiko dan `execute_code` | Hanya deploy ke server dan perintah jaringan di mode lokal penuh yang ditanya. Peringatan risiko tetap tercatat di timeline |
+| **Super Auto** | Langsung diterapkan, termasuk di luar workspace dan file yang belum disimpan | Langsung jalan, termasuk yang berisiko dan `execute_code` | Hanya hapus rekursif (`rm -rf`, `Remove-Item -Recurse`, `rd /s`, `shutil.rmtree`, dll.), deploy ke server, dan perintah jaringan di mode lokal penuh yang ditanya. Peringatan risiko tetap tercatat di timeline |
+
+**Effort.** Di bawah daftar mode ada slider *Effort* lima tingkat: Rendah, Sedang, Tinggi, Sangat tinggi, Maks (←/→ saat menu mode terbuka). Effort menentukan seberapa lama model berpikir sebelum menjawab: makin tinggi makin teliti, tapi makin lambat dan makin banyak token. Hermes mengirimnya ke endpoint sebagai `reasoning_effort`; tanpa pengaturan, Hermes memakai Sedang (`medium`). Bagaimana endpoint menerjemahkannya (misalnya router ke thinking budget Claude) tergantung endpoint itu.
+
+Hermes tidak punya perintah effort lewat ACP; ia membaca `agent.reasoning_effort` dari config.yaml setiap kali membangun agent sebuah sesi. Menggeser slider menulis baris itu lalu memindahkan sesi panel ini ke modelnya sendiri, sehingga effort baru berlaku di sesi yang sama tanpa kehilangan riwayat. Effort hanya bisa diganti saat agent tidak sedang bekerja. Setiap panel menyimpan effort-nya sendiri; sesi baru di panel mana pun memulai dengan effort yang terakhir dipilih. Untuk profil endpoint custom, baris itu ditulis di config milik IDE; untuk profil *Hermes* bawaan, ekstensi mengubah satu baris `agent.reasoning_effort` di config.yaml milikmu, dan hanya setelah slider pernah dipakai. Override per model (`agent.reasoning_overrides`) di config Hermes tetap menang atas slider.
 
 Pengaman yang tetap berlaku di semua mode selain Super Auto:
 
@@ -412,7 +418,7 @@ Hermes sendiri hanya meminta izin untuk perintah yang ia anggap berisiko. Agar *
 - Patch multi-file (format V4A) hanya bisa diterima atau ditolak utuh.
 - Jika file punya perubahan yang belum disimpan, kartu edit memberi peringatan; menerima edit akan menimpanya.
 - Hermes 0.21.x di Windows menerjemahkan URI `file:///C:/...` menjadi path WSL, sehingga lampiran `resource_link` tidak terbaca. Karena itu ekstensi menyematkan isi file sendiri.
-- **Angka token di indikator** (`↑ input · ↓ output`) adalah token nyata giliran yang sedang berjalan, dijumlahkan dari log Hermes per request ke model (`API call #N ... in= out=`), jadi sama dengan yang dicatat router. Sebelum request pertama selesai, indikator menampilkan perkiraan (`~`, sekitar 4 karakter per token dari teks yang sudah di-stream). Setting `hermes.narrateSteps` (bawaan nyala) meminta agent menulis satu kalimat singkat sebelum memanggil tool. Angka pemakaian konteks di composer (`15.2k / 256k`) berasal dari Hermes.
+- **Angka token di indikator** (`↑ input · ↓ output`) adalah token nyata giliran yang sedang berjalan, dijumlahkan dari log Hermes per request ke model (`API call #N ... in= out=`), jadi sama dengan yang dicatat router. Sebelum request pertama selesai, indikator menampilkan perkiraan (`~`, sekitar 4 karakter per token dari teks yang sudah di-stream). Setting `hermes.narrateSteps` (bawaan nyala) meminta agent menulis satu kalimat singkat sebelum memanggil tool, dan satu kalimat singkat tentang hasil tool sebelumnya sebelum langkah berikutnya. Angka pemakaian konteks di composer (`15.2k / 256k`) berasal dari Hermes.
 - **Plan dan Ask bergantung pada instruksi di prompt.** Edit selalu tertahan karena selalu lewat permintaan izin. Perintah terminal hanya bisa ditolak bila Hermes meminta izin; tanpa hook izin terminal (lihat bagian di atas), sebagian perintah bisa berjalan tanpa ditanya.
 - **Edit otomatis dan Auto melewati diff review** untuk edit di dalam workspace; **Super Auto** juga untuk edit di luar workspace. Edit yang sudah diterapkan dibatalkan lewat git atau undo editor. Checkpoint tidak memulihkan file di luar workspace.
 - Gambar yang ditempel hanya berguna bila model yang dipakai Hermes bisa membaca gambar. Pesan berisi gambar saja tanpa teks belum bisa dikirim.

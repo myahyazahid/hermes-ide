@@ -1,8 +1,8 @@
 // Composer with context chips, @-mentions (F-12), pasted images, "/" commands and approval modes.
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type RefObject } from "react";
-import type { ContextRef, MentionItem, ViewState } from "../../src/shared/protocol";
+import type { ContextRef, Effort, MentionItem, ViewState } from "../../src/shared/protocol";
 import { t, type Locale, type StringKey } from "../../src/shared/strings";
-import { MenuList, ModeIcon, MODES, modeLabel, nextMode, PlusIcon, SlashIcon, type MenuItem } from "./ComposerMenus";
+import { EffortRow, MenuList, ModeIcon, MODES, modeLabel, nextMode, PlusIcon, SlashIcon, stepEffort, type MenuItem } from "./ComposerMenus";
 import { currentModelName, ModelPicker } from "./ModelPicker";
 import { formatTokens, relativePath } from "./format";
 import { send } from "./host";
@@ -151,6 +151,12 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
     { id: "log", section: t(locale, "cmd.section.hermes"), label: t(locale, "action.showLog"), run: run(() => send({ type: "showLog" })) },
     { id: "restart", section: t(locale, "cmd.section.hermes"), label: t(locale, "action.restart"), run: run(() => send({ type: "restart" })) },
   ];
+  // The effort slider sits under the modes, wherever they are listed.
+  const showsModes = modeOpen || menu?.view === "modes";
+  const canSetEffort = !state.busy && state.phase === "ready";
+  const pickEffort = (effort: Effort) => {
+    if (canSetEffort && effort !== state.effort) send({ type: "setEffort", effort });
+  };
   const slashQuery = menu?.source === "slash" ? text.slice(1).toLowerCase() : "";
   const menuItems: MenuItem[] = modeOpen
     ? modeItems
@@ -266,6 +272,11 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
                     <kbd>⇧</kbd> + <kbd>tab</kbd> {t(locale, "mode.switchHint")}
                   </span>
                 </div>
+              ) : undefined
+            }
+            footer={
+              showsModes && state.effort ? (
+                <EffortRow effort={state.effort} disabled={!canSetEffort} locale={locale} onPick={pickEffort} />
               ) : undefined
             }
           />
@@ -384,6 +395,11 @@ export function Composer({ state, locale, inputRef, chips, setChips, mention, on
         }}
         onKeyDown={(e) => {
           if (menu || modeOpen) {
+            if (showsModes && state.effort && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+              e.preventDefault();
+              pickEffort(stepEffort(state.effort, e.key === "ArrowLeft" ? -1 : 1));
+              return;
+            }
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
               e.preventDefault();
               if (menuItems.length) setMenuActive((a) => (Math.min(a, menuItems.length - 1) + (e.key === "ArrowDown" ? 1 : menuItems.length - 1)) % menuItems.length);

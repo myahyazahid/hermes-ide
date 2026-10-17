@@ -1,7 +1,9 @@
-// Hosts the React chat as a webview view (sidebar) or an editor tab and relays messages to HermesService.
+// Hosts the React chat as a webview view (sidebar) or editor tabs. Each host gets its own HermesService from the
+// hub, so every panel runs its own session, as in Claude Code.
 import * as vscode from "vscode";
 import { supportsSecondarySidebar } from "../core/sidebar";
 import type { HostToView, ViewToHost } from "../shared/protocol";
+import type { ChatHub } from "./chatHub";
 import type { HermesService } from "./hermesService";
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.WebviewPanelSerializer {
@@ -9,11 +11,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Webv
   static readonly viewId = "hermes.chat";
   /** Secondary Side Bar view: the tab next to Chat / Codex / Claude Code. */
   static readonly secondaryViewId = "hermes.chatSecondary";
-  /** The same chat opened as an editor tab (the button in the editor toolbar). */
+  /** The chat opened as an editor tab (the button in the editor toolbar); each tab is a session of its own. */
   static readonly panelViewType = "hermes.chatPanel";
-  /** Both sidebar views can be open at once (activity bar and Secondary Side Bar), so keep them apart. */
-  private readonly views = new Map<string, vscode.WebviewView>();
-  private panel: vscode.WebviewPanel | undefined;
+  /** How to bring each service's panel to the front. */
+  private readonly hosts = new Map<HermesService, () => Thenable<unknown>>();
 
   /** The view `hermes.openChat` focuses: the Secondary Side Bar tab where it exists, else the activity bar one. */
   static activeViewId(): string {
@@ -22,22 +23,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Webv
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly service: HermesService,
+    private readonly hub: ChatHub,
   ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
-    this.views.set(view.viewType, view);
-    this.wire(view, () => {
-      if (this.views.get(view.viewType) === view) this.views.delete(view.viewType);
+    const service = this.wire(view, () => vscode.commands.executeCommand(`${view.viewType}.focus`));
+    view.onDidChangeVisibility(() => {
+      if (view.visible) this.hub.touch(service);
     });
   }
 
-  /** Opens the chat in an editor tab, or brings the tab that is already open to the front. */
+  /** Opens a new chat in an editor tab, with a session of its own. */
   openInEditor(): void {
-    if (this.panel) {
-      this.panel.reveal();
-      return;
-    }
     const panel = vscode.window.createWebviewPanel(ChatViewProvider.panelViewType, "Hermes", vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
@@ -45,43 +42,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Webv
     this.adopt(panel);
   }
 
-  /** Brings the editor tab back after VS Code was reloaded. */
+  /** Brings an editor tab back after VS Code was reloaded. */
   deserializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
-    this.panel?.dispose();
     this.adopt(panel);
     return Promise.resolve();
   }
 
+  /** Brings the panel used last to the front (the default sidebar view when none is open), then sends it `then`. */
   async reveal(then?: HostToView): Promise<void> {
-    await vscode.commands.executeCommand(`${ChatViewProvider.activeViewId()}.focus`);
-    if (then) void this.views.get(ChatViewProvider.activeViewId())?.webview.postMessage(then);
+    const show = this.hosts.get(this.hub.active);
+    await (show ? show() : vscode.commands.executeCommand(`${ChatViewProvider.activeViewId()}.focus`));
+    if (then) this.hub.active.showInView(then);
   }
 
   private adopt(panel: vscode.WebviewPanel): void {
-    this.panel = panel;
     panel.iconPath = {
       light: vscode.Uri.joinPath(this.extensionUri, "media", "nous-tile-light.png"),
       dark: vscode.Uri.joinPath(this.extensionUri, "media", "nous-tile-dark.png"),
     };
-    this.wire(panel, () => {
-      if (this.panel === panel) this.panel = undefined;
+    const service = this.wire(panel, () => {
+      panel.reveal();
+      return Promise.resolve();
+    });
+    panel.onDidChangeViewState((e) => {
+      if (e.webviewPanel.active) this.hub.touch(service);
     });
   }
 
-  private wire(host: { webview: vscode.Webview; onDidDispose: vscode.Event<void> }, onGone: () => void): void {
+  private wire(host: { webview: vscode.Webview; onDidDispose: vscode.Event<void> }, show: () => Thenable<unknown>): HermesService {
     const dist = vscode.Uri.joinPath(this.extensionUri, "dist");
     host.webview.options = { enableScripts: true, localResourceRoots: [dist] };
     host.webview.html = this.html(host.webview, dist);
 
+    const service = this.hub.acquire();
     const post = (msg: HostToView) => void host.webview.postMessage(msg);
-    const attached = this.service.attachView(post);
+    const attached = service.attachView(post);
+    this.hosts.set(service, show);
+    this.hub.touch(service);
     // Passing `post` lets the service answer this view's own requests (mentions, session list) without echoing them elsewhere.
-    const received = host.webview.onDidReceiveMessage((msg: ViewToHost) => void this.service.handleViewMessage(msg, post));
+    const received = host.webview.onDidReceiveMessage((msg: ViewToHost) => {
+      this.hub.touch(service);
+      void service.handleViewMessage(msg, post);
+    });
     host.onDidDispose(() => {
       attached.dispose();
       received.dispose();
-      onGone();
+      if (this.hosts.get(service) === show) this.hosts.delete(service);
+      this.hub.release(service);
     });
+    return service;
   }
 
   private html(webview: vscode.Webview, dist: vscode.Uri): string {

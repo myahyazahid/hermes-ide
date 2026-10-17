@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CommandAllowlist, dangerousReason, normalizeCommand } from "../../src/core/commandPolicy";
+import { CommandAllowlist, dangerousReason, normalizeCommand, RECURSIVE_DELETE } from "../../src/core/commandPolicy";
 
 describe("dangerousReason", () => {
   it.each([
@@ -18,6 +18,26 @@ describe("dangerousReason", () => {
     "chmod -R 777 .",
   ])("flags %s", (cmd) => {
     expect(dangerousReason(cmd)).toBeTruthy();
+  });
+
+  it.each([
+    "rm -rf node_modules",
+    "rm -fr build",
+    "rm -v -rf build",
+    "rm -R dist",
+    "rm --recursive dist",
+    "Remove-Item -Recurse -Force C:\\temp\\x",
+    "rd /s /q D:\\old",
+    "del /s *.log",
+    "import shutil; shutil.rmtree('build')",
+    "fs.rmSync('dist', { recursive: true, force: true })",
+  ])("marks %s as a recursive delete (asks even in Super Auto)", (cmd) => {
+    expect(dangerousReason(cmd)).toBe(RECURSIVE_DELETE);
+  });
+
+  it("does not call other dangerous commands a recursive delete", () => {
+    expect(dangerousReason("git reset --hard")).not.toBe(RECURSIVE_DELETE);
+    expect(dangerousReason("rm -f file.txt")).toBeUndefined();
   });
 
   it.each(["npm run compile", "git status", "ls -la", "rm file.txt", "git push origin feature", "php artisan test"])(

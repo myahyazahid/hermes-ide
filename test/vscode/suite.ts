@@ -359,6 +359,53 @@ export async function run(): Promise<void> {
       ok(!(await svc.listSessions()).some((s) => s.id === a), "deleted session gone");
     }],
 
+    ["each chat panel runs its own session with the same history, and a session open in one panel is locked in the others", async () => {
+      // Hermes lists a session only once it has been prompted.
+      await script([{ text: "Jawaban panel satu." }]);
+      await svc.handleViewMessage({ type: "send", text: "pesan-panel-satu" });
+      const first = svc.state.sessionId!;
+
+      await vscode.commands.executeCommand("hermes.openInEditor");
+      const other = await waitFor(() => api.hub.all().find((s) => s !== svc), "a second service for the editor tab");
+      await waitFor(() => other.state.phase === "ready", "the second panel's Hermes ready", 90_000);
+      ok(other.processId && other.processId !== svc.processId, "its own Hermes process");
+      ok(other.state.sessionId && other.state.sessionId !== first, "its own session");
+      equal(api.hub.active, other, "the panel just opened is the active one");
+
+      await script([{ text: "Jawaban panel dua." }]);
+      await other.handleViewMessage({ type: "send", text: "pesan-panel-dua" });
+      ok(other.transcriptItems().some((i) => i.kind === "agent" && i.text.includes("Jawaban panel dua.")), "the second panel got its reply");
+      ok(!items().some((i) => i.kind === "user" && i.text === "pesan-panel-dua"), "the first panel's chat is untouched");
+
+      // The history is shared, with the other panel's session marked as locked.
+      let listed: any;
+      await other.handleViewMessage({ type: "listSessions", requestId: 77 }, (m) => void (listed = m));
+      const row = listed?.sessions.find((s: any) => s.id === first);
+      ok(row?.elsewhere, "the first panel's session is listed as open elsewhere: " + JSON.stringify(listed?.sessions));
+
+      const win = vscode.window as unknown as Record<string, unknown>;
+      const original = win.showInformationMessage;
+      const shown: string[] = [];
+      win.showInformationMessage = async (message: string) => void shown.push(message);
+      try {
+        const own = other.state.sessionId;
+        await other.openSession(first);
+        equal(other.state.sessionId, own, "a session open in another panel is not opened twice");
+        ok(shown.some((m) => /another Hermes panel|panel Hermes lain/.test(m)), "the user is told why: " + JSON.stringify(shown));
+      } finally {
+        win.showInformationMessage = original;
+      }
+
+      // Closing the tab stops its Hermes; the first panel keeps going.
+      const tab = vscode.window.tabGroups.all.flatMap((g) => g.tabs).find((t) => t.input instanceof vscode.TabInputWebview && t.input.viewType.includes("hermes.chatPanel"));
+      ok(tab, "the chat tab is open");
+      await vscode.window.tabGroups.close(tab!);
+      await waitFor(() => api.hub.all().length === 1, "the closed panel's service released");
+      await waitFor(() => other.processId === undefined, "its Hermes process stopped");
+      equal(api.hub.active, svc, "the first panel is the active one again");
+      equal(svc.state.phase, "ready", "the first panel's Hermes still runs");
+    }],
+
     ["F-15: MCP servers configured in the panel reach Hermes", async () => {
       await svc.handleViewMessage({
         type: "saveMcpServers",

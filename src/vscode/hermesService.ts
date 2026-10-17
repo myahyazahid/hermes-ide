@@ -9,7 +9,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type * as acp from "@agentclientprotocol/sdk";
 import { AcpClient, type HermesModelState } from "../core/acpClient";
-import { CommandAllowlist, dangerousReason, normalizeCommand } from "../core/commandPolicy";
+import { CommandAllowlist, dangerousReason, normalizeCommand, RECURSIVE_DELETE } from "../core/commandPolicy";
 import { testConnection } from "../core/connectionTest";
 import { buildPromptBlocks, contextLabel, decodeFile, MAX_FILE_BYTES, type FileContent } from "../core/context";
 import {
@@ -21,6 +21,7 @@ import { versionStatus } from "../core/hermesMaintenance";
 import { evaluatePrivacy, networkCommandReason, scanHermesConfig, type ConfigEndpoint, type PrivacyReport } from "../core/privacy";
 import { effectiveAgentLanguage, languageNote, learningNote, parseAgentLanguage, parseLearningLevel } from "../core/agentNotes";
 import { listEndpointModels } from "../core/endpointModels";
+import { DEFAULT_EFFORT, isEffort, readReasoningEffort, withReasoningEffort } from "../core/effort";
 import { isPresetUrl } from "../shared/presets";
 import { isStackId, stackInfo } from "../shared/stacks";
 import { HOOK_ENV } from "../core/terminalApproval";
@@ -43,7 +44,7 @@ import { parseSessionTime } from "../core/time";
 import { Transcript, transcriptToMarkdown } from "../core/transcript";
 import { createToolImageFinder } from "../core/toolImages";
 import type {
-  AgentMode, ContextRef, HostToView, LanguageView, LearningView, McpServerView, MentionItem, MemoryPanel, MemoryTarget, ModelOption, PermissionAction, RoutingView, SessionView, SkillsPanel, TerminalApprovalState, TranscriptItem, ViewState,
+  AgentMode, ContextRef, Effort, HostToView, LanguageView, LearningView, McpServerView, MentionItem, MemoryPanel, MemoryTarget, ModelOption, PermissionAction, RoutingView, SessionView, SkillsPanel, TerminalApprovalState, TranscriptItem, ViewState,
   ViewToHost,
 } from "../shared/protocol";
 import { resolveLocale, t, type Locale, type StringKey } from "../shared/strings";
@@ -69,13 +70,17 @@ const ALLOWLIST_KEY = "hermes.allowlist";
 const PREFERRED_MODEL_KEY = "hermes.preferredModel";
 const LAST_SESSION_KEY = "hermes.lastSessionId";
 const MODE_KEY = "hermes.agentMode";
+/** The reasoning effort the user picked last; new sessions in every panel start with it. */
+const EFFORT_KEY = "hermes.reasoningEffort";
 const LEARNING_KEY = "hermes.learningMode";
 const MODES: readonly AgentMode[] = ["manual", "acceptEdits", "plan", "ask", "auto", "superAuto"];
 const workspaceNote = (cwd: string) =>
   `[IDE] The user's project is the VS Code workspace at ${cwd}; relative paths resolve there. ` +
   "Create and edit the files you make for the user inside this workspace. The Hermes scratch directory is only for throwaway probes, never for deliverables.";
 const NARRATE_NOTE =
-  "[IDE] Before each tool call or group of tool calls, write one short sentence to the user saying what you are about to do and why, in the user's language. Keep it to one line; do not repeat it after the tool runs.";
+  "[IDE] Narrate your steps to the user in short lines, in the user's language. Before each tool call or group of tool calls, write one short sentence saying what you are about to do and why. " +
+  "When tool results come back and you are about to call another tool, first say in one short sentence what they showed (the key finding, number or error, not a copy of the output), then your next step; " +
+  "both can share one line, e.g. \"The build passes but 2 tests fail; I'll open the first failing test.\" Your final answer already covers the last results, so do not add a separate line for them there.";
 const ASK_NOTE =
   "[Ask mode] Answer the question. This is read-only: you may read and search files, but do not edit files and do not run terminal commands or code.";
 const PLAN_NOTE =
@@ -102,6 +107,28 @@ export interface IdeFeatures {
   /** Serves IDE tools (codebase_search) to Hermes over MCP. */
   mcp: McpHttpServer;
 }
+
+/**
+ * Every chat panel has its own service (its own Hermes process and session). What must stay one per window is
+ * created by the first service and handed to the others: the usage ledger, the task list, the deploy history,
+ * Hermes updates, checkpoints and the file index.
+ */
+interface SharedParts {
+  /** All live services, the first one included: a session open in one is locked for the others. */
+  readonly peers: Set<HermesService>;
+  readonly files: FileIndex;
+  readonly usageTracker: UsageTracker;
+  readonly checkpoints: CheckpointManager;
+  readonly stackTemplates: StackTemplates;
+  readonly deploy: DeployManager;
+  readonly notifier: Notifier;
+  readonly tasks: TaskManager;
+  readonly maintenance: HermesMaintenance;
+  /** Runs config.yaml edits one at a time: every panel's Hermes reads the same file. */
+  configLock<T>(run: () => Promise<T>): Promise<T>;
+}
+
+let nextInstance = 0;
 
 export interface InlineEditRequest {
   path: string;
@@ -170,6 +197,9 @@ export class HermesService implements vscode.Disposable {
   readonly maintenance: HermesMaintenance;
   /** Hash of the project rules last sent in each session, so they are sent once and again only when they change. */
   private readonly rulesSent = new Map<string, string>();
+  private readonly shared: SharedParts;
+  /** Tells this panel's diff reviews apart from another panel's in the shared review manager. */
+  private readonly instance = ++nextInstance;
   /** Turn number (0-based user message count) of the running turn, the key for its checkpoint. -1 before the first. */
   private currentTurn = -1;
   private turnStartedAt = 0;
@@ -196,44 +226,17 @@ export class HermesService implements vscode.Disposable {
     private readonly log: AgentLog,
     private readonly reviews: DiffReviewManager,
     private readonly features: IdeFeatures,
+    shared?: SharedParts,
   ) {
     this.profiles = new ProfileStore(context.secrets);
     this.approval = new TerminalApprovalSetup(context, log);
-    this.files = new FileIndex(() => this.cwd);
-    this.usageTracker = new UsageTracker(context);
-    this.checkpoints = new CheckpointManager(context, log, () => this.cwd);
-    this.stackTemplates = new StackTemplates(context, () => this.cwd);
-    this.deploy = new DeployManager(context, log, {
-      locale: () => this.locale,
-      post: (msg) => this.post?.(msg),
-      terminalApproval: () => this.state.terminalApproval,
-    });
+    this.shared = shared ?? this.createShared();
+    this.shared.peers.add(this);
+    ({
+      files: this.files, usageTracker: this.usageTracker, checkpoints: this.checkpoints, stackTemplates: this.stackTemplates,
+      deploy: this.deploy, notifier: this.notifier, tasks: this.tasks, maintenance: this.maintenance,
+    } = this.shared);
     this.rules = new ProjectRulesWatcher(() => this.cwd, () => this.setState({ rules: this.rules.view(), stacks: this.stackTemplates.views() }));
-    this.notifier = new Notifier(log, { locale: () => this.locale, openPanel: () => void vscode.commands.executeCommand("hermes.openChat") });
-    this.tasks = new TaskManager(context, log, {
-      locale: () => this.locale,
-      post: (msg) => this.post?.(msg),
-      cwd: () => this.cwd,
-      hermesPath: () => this.hermesPath,
-      // Tasks run unattended, so every terminal command must surface as a permission request for the task policy to judge.
-      launchEnv: async () => ({ ...(await this.launchEnv()).env, [HOOK_ENV]: "1" }),
-      blockedReason: () => this.tasksBlockedReason(),
-      allowlist: () => this.allowlist(),
-      privacy: () => privacySettings(),
-      clientVersion: () => String(context.extension.packageJSON.version ?? "0.0.0"),
-      notifyDone: (detail, ms) => void this.notifier.notify("done", detail, ms),
-    });
-    this.maintenance = new HermesMaintenance(context, log, {
-      locale: () => this.locale,
-      hermesPath: () => this.hermesPath,
-      env: () => this.launchEnvironment,
-      version: () => this.state.hermesVersion,
-      busy: () => this.state.busy,
-      stopHermes: () => this.shutdown(),
-      refresh: () => this.refresh(),
-      setUpdateStatus: (status) => this.setState({ hermesUpdate: status }),
-      notice: (level, text) => this.notice(level, text),
-    });
     this.state = {
       phase: "checking",
       mode: MODES.find((m) => m === context.workspaceState.get(MODE_KEY)) ?? "manual",
@@ -253,8 +256,12 @@ export class HermesService implements vscode.Disposable {
       language: this.languageView(),
       learning: this.learningView(),
       stacks: this.stackTemplates.views(),
+      // A Hermes update found before this panel opened.
+      hermesUpdate: this.others()[0]?.state.hermesUpdate,
     };
-    this.disposables.push(this.rules, this.maintenance, this.tasks,
+    // The shared parts belong to the first service; the others leave them alone when their panel closes.
+    if (!shared) this.disposables.push(this.maintenance, this.tasks);
+    this.disposables.push(this.rules,
       features.completion.onDidChange(() => this.setState({ completion: features.completion.view() })),
       features.index.onDidChange(() => this.setState({ index: features.index.view() })),
       vscode.workspace.onDidGrantWorkspaceTrust(() => void this.refresh()),
@@ -307,6 +314,91 @@ export class HermesService implements vscode.Disposable {
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   }
 
+  /** Built by the first service; its callbacks speak for every panel, not just the first one. */
+  private createShared(): SharedParts {
+    const context = this.context;
+    const log = this.log;
+    const peers = new Set<HermesService>();
+    const broadcast = (msg: HostToView) => {
+      for (const peer of peers) peer.post?.(msg);
+    };
+    const notifier = new Notifier(log, { locale: () => this.locale, openPanel: () => void vscode.commands.executeCommand("hermes.openChat") });
+    let configQueue: Promise<unknown> = Promise.resolve();
+    return {
+      peers,
+      configLock: <T>(run: () => Promise<T>) => {
+        const next = configQueue.then(run, run);
+        configQueue = next.catch(() => undefined);
+        return next;
+      },
+      files: new FileIndex(() => this.cwd),
+      usageTracker: new UsageTracker(context),
+      checkpoints: new CheckpointManager(context, log, () => this.cwd),
+      stackTemplates: new StackTemplates(context, () => this.cwd),
+      deploy: new DeployManager(context, log, {
+        locale: () => this.locale,
+        post: broadcast,
+        terminalApproval: () => this.state.terminalApproval,
+      }),
+      notifier,
+      tasks: new TaskManager(context, log, {
+        locale: () => this.locale,
+        post: broadcast,
+        cwd: () => this.cwd,
+        hermesPath: () => this.hermesPath,
+        // Tasks run unattended, so every terminal command must surface as a permission request for the task policy to judge.
+        launchEnv: async () => ({ ...(await this.launchEnv()).env, [HOOK_ENV]: "1" }),
+        blockedReason: () => this.tasksBlockedReason(),
+        allowlist: () => this.allowlist(),
+        privacy: () => privacySettings(),
+        clientVersion: () => String(context.extension.packageJSON.version ?? "0.0.0"),
+        notifyDone: (detail, ms) => void notifier.notify("done", detail, ms),
+      }),
+      maintenance: new HermesMaintenance(context, log, {
+        locale: () => this.locale,
+        hermesPath: () => this.hermesPath,
+        env: () => this.launchEnvironment,
+        version: () => this.state.hermesVersion,
+        // Updating Hermes replaces the binary every panel runs, so it waits for all of them and stops all of them.
+        busy: () => [...peers].some((p) => p.state.busy),
+        stopHermes: async () => void (await Promise.all([...peers].map((p) => p.shutdown()))),
+        refresh: async () => void (await Promise.all([...peers].map((p) => p.refresh()))),
+        setUpdateStatus: (status) => {
+          for (const peer of peers) peer.setState({ hermesUpdate: status });
+        },
+        notice: (level, text) => this.notice(level, text),
+      }),
+    };
+  }
+
+  /** A service for another chat panel: its own Hermes process and session, the same history and shared parts. */
+  createSibling(): HermesService {
+    return new HermesService(this.context, this.log, this.reviews, this.features, this.shared);
+  }
+
+  /** Every live service, this one included. */
+  get peers(): HermesService[] {
+    return [...this.shared.peers];
+  }
+
+  get hasViews(): boolean {
+    return this.views.size > 0;
+  }
+
+  /** Sends a message to the view of this service the user touched last (focus the composer, open a page). */
+  showInView(msg: HostToView): void {
+    this.activeView?.(msg);
+  }
+
+  /** True when another panel has this session open: one session runs in one panel at a time. */
+  private openElsewhere(sessionId: string): boolean {
+    return [...this.shared.peers].some((p) => p !== this && p.state.sessionId === sessionId);
+  }
+
+  private others(): HermesService[] {
+    return [...this.shared.peers].filter((p) => p !== this);
+  }
+
   // ---- view wiring --------------------------------------------------------------------------
 
   attachView(post: (msg: HostToView) => void): vscode.Disposable {
@@ -357,6 +449,8 @@ export class HermesService implements vscode.Disposable {
         this.setState({ mode: msg.mode });
         await this.context.workspaceState.update(MODE_KEY, msg.mode);
         return;
+      case "setEffort":
+        return this.setEffort(msg.effort);
       case "attachFile": {
         const cwd = this.cwd;
         const picked = await vscode.window.showOpenDialog({ canSelectMany: true, defaultUri: cwd ? vscode.Uri.file(cwd) : undefined });
@@ -636,7 +730,9 @@ export class HermesService implements vscode.Disposable {
         this.setState({ phase: "stopped", phaseDetail: undefined });
         return false;
       }
-      const client = await AcpClient.start(
+      // `let`: Hermes can exit during the handshake, before start() has returned the client.
+      let started: AcpClient | undefined;
+      const client = started = await AcpClient.start(
         { command: this.hermesPath, cwd, env },
         {
           onSessionUpdate: (n) => this.onSessionUpdate(n),
@@ -645,7 +741,8 @@ export class HermesService implements vscode.Disposable {
             this.log.hermes(line);
             this.onHermesLogLine(line);
           },
-          onExit: (info) => this.onExit(client, info),
+          // An exit during the handshake is reported by start() itself.
+          onExit: (info) => started && this.onExit(started, info),
         },
         { name: "hermes-ide", version: String(this.context.extension.packageJSON.version ?? "0.0.0") },
       );
@@ -687,6 +784,7 @@ export class HermesService implements vscode.Disposable {
       await this.context.workspaceState.update(LAST_SESSION_KEY, sessionId);
       await this.pinAskMode(client, sessionId);
       this.applyModels(models);
+      await this.publishEffort();
       this.setState({ phase: "ready", sessionId, busy: false });
       this.publishUsage();
       this.markRestorable();
@@ -986,6 +1084,7 @@ export class HermesService implements vscode.Disposable {
       this.notesForNextPrompt.length = 0;
       this.resetTranscript();
       this.applyModels(created.models);
+      await this.publishEffort();
       this.currentTurn = -1;
       this.setState({ sessionId: created.sessionId, sessionTitle: undefined, usage: undefined, sessionUsage: undefined, canUndoRestore: false });
       await this.applyPreferredModel();
@@ -1015,9 +1114,9 @@ export class HermesService implements vscode.Disposable {
       return;
     }
     try {
-      await this.client.setModel(this.state.sessionId, modelId);
+      await this.switchModel(this.client, this.state.sessionId, modelId);
       this.setState({ currentModelId: modelId });
-      if (!this.profiles.active()) await this.context.globalState.update(PREFERRED_MODEL_KEY, modelId);
+      await this.rememberModel(modelId);
     } catch (error) {
       this.notice("error", this.tr("notice.modelFailed", (error as Error).message));
     }
@@ -1043,6 +1142,8 @@ export class HermesService implements vscode.Disposable {
     if (JSON.stringify(next) === JSON.stringify(this.endpointModels)) return;
     this.endpointModels = next;
     this.publishModels(this.state.currentModelId);
+    // The model picked last may be one only the endpoint lists: apply it now, while the session is still empty.
+    if (this.transcript.userCount === 0 && !this.state.busy) await this.applyPreferredModel();
   }
 
   private publishModels(current: string | undefined): void {
@@ -1067,14 +1168,96 @@ export class HermesService implements vscode.Disposable {
     this.updatePrivacy(); // the model in use may itself be one that local mode does not allow
   }
 
-  /** Profile "hermes": re-applies the model the user last picked (e.g. customer-service). */
+  /** A new session starts on the model the user picked last with this profile, in any panel. */
   private async applyPreferredModel(): Promise<void> {
-    if (this.profiles.active()) return;
-    const preferred = this.context.globalState.get<string>(PREFERRED_MODEL_KEY);
+    const preferred = this.preferredModels()[this.profiles.activeId()];
     if (!preferred || preferred === this.state.currentModelId) return;
     if (!this.availableModels.some((m) => m.modelId === preferred)) return;
     if (modelBlockedByLocalMode(preferred)) return;
     await this.selectModel(preferred);
+  }
+
+  // ---- reasoning effort ---------------------------------------------------------------------
+  //
+  // Hermes has no ACP call for the effort: it reads `agent.reasoning_effort` from config.yaml whenever it builds a
+  // session's agent, and a model switch rebuilds it. So the slider writes the config and switches this session to its
+  // own model again. At rest the config holds the effort picked last, which every new session starts with.
+
+  private get configPath(): string {
+    return path.join(this.hermesHomeDir(), "config.yaml");
+  }
+
+  /** The effort picked last in any panel; undefined until the slider was used, and then the config is left alone. */
+  private pickedEffort(): Effort | undefined {
+    const picked = this.context.globalState.get<unknown>(EFFORT_KEY);
+    return isEffort(picked) ? picked : undefined;
+  }
+
+  /** The effort a session built now gets. */
+  private async restingEffort(): Promise<Effort> {
+    const yaml = await readFile(this.configPath, "utf8").catch(() => "");
+    return readReasoningEffort(yaml) ?? DEFAULT_EFFORT;
+  }
+
+  private async writeEffort(effort: Effort): Promise<void> {
+    const yaml = await readFile(this.configPath, "utf8").catch(() => "");
+    const next = withReasoningEffort(yaml, effort);
+    if (next === yaml) return;
+    await mkdir(path.dirname(this.configPath), { recursive: true });
+    await writeFile(this.configPath, next, "utf8");
+  }
+
+  /** After a session was created or loaded: show the effort it was built with. */
+  private async publishEffort(): Promise<void> {
+    this.setState({ effort: await this.restingEffort() });
+  }
+
+  /** The slider: this session moves to `effort` now, and new sessions start with it from here on. */
+  async setEffort(effort: Effort): Promise<void> {
+    if (!isEffort(effort) || effort === this.state.effort || this.state.busy) return;
+    await this.context.globalState.update(EFFORT_KEY, effort);
+    try {
+      await this.shared.configLock(async () => {
+        await this.writeEffort(effort);
+        const { sessionId, currentModelId } = this.state;
+        if (this.client && sessionId && currentModelId) await this.client.setModel(sessionId, currentModelId);
+      });
+      this.setState({ effort });
+    } catch (error) {
+      this.notice("error", this.tr("effort.failed", (error as Error).message));
+    }
+  }
+
+  /**
+   * Every model switch rebuilds the session's agent from config.yaml, which holds the effort picked last, perhaps in
+   * another panel. This session keeps its own: the config carries it for the switch and is put back right after.
+   */
+  private async switchModel(client: AcpClient, sessionId: string, modelId: string): Promise<void> {
+    const own = this.state.effort;
+    await this.shared.configLock(async () => {
+      const resting = await this.restingEffort();
+      if (!own || own === resting) return void (await client.setModel(sessionId, modelId));
+      await this.writeEffort(own);
+      try {
+        await client.setModel(sessionId, modelId);
+      } finally {
+        await this.writeEffort(resting);
+      }
+    });
+  }
+
+  /** Last picked model per endpoint profile (models of one endpoint mean nothing to another). */
+  private preferredModels(): Record<string, string> {
+    const raw = this.context.globalState.get<unknown>(PREFERRED_MODEL_KEY);
+    // Before 0.10 only the "hermes" profile remembered its model, as a plain string.
+    if (typeof raw === "string") return { [HERMES_PROFILE_ID]: raw };
+    return raw && typeof raw === "object" ? { ...(raw as Record<string, string>) } : {};
+  }
+
+  private async rememberModel(modelId: string): Promise<void> {
+    const models = this.preferredModels();
+    models[this.profiles.activeId()] = modelId;
+    await this.context.globalState.update(PREFERRED_MODEL_KEY, models);
   }
 
   private onSessionUpdate(n: acp.SessionNotification): void {
@@ -1148,6 +1331,7 @@ export class HermesService implements vscode.Disposable {
     });
     const sessions: SessionView[] = list.map((s) => ({
       id: s.id, title: s.title, updatedAt: parseSessionTime(s.updatedAt), current: s.id === this.state.sessionId,
+      ...(this.openElsewhere(s.id) ? { elsewhere: true } : {}),
     }));
     (reply ?? this.post)?.({ type: "sessions", requestId, sessions });
   }
@@ -1155,6 +1339,11 @@ export class HermesService implements vscode.Disposable {
   /** Resumes a session from history: Hermes replays it into a fresh transcript. */
   async openSession(sessionId: string, title?: string): Promise<void> {
     if (sessionId === this.state.sessionId) return;
+    // Two Hermes processes writing one session would interleave its history.
+    if (this.openElsewhere(sessionId)) {
+      void vscode.window.showInformationMessage(this.tr("sessions.lockedElsewhere"));
+      return;
+    }
     if (this.state.busy) await this.stop();
     if (!(await this.ensureStarted()) || !this.client || !this.cwd) return;
     this.cancelPending();
@@ -1169,6 +1358,7 @@ export class HermesService implements vscode.Disposable {
       if (!loaded) throw new Error("session not found");
       await this.pinAskMode(this.client, sessionId);
       this.applyModels(loaded.models);
+      await this.publishEffort();
       this.transcript.endTurn();
       this.scheduleFlush();
       // The replay may carry its own title; otherwise keep the one the list showed.
@@ -1186,6 +1376,10 @@ export class HermesService implements vscode.Disposable {
 
   async deleteSession(sessionId: string): Promise<void> {
     if (!this.hermesPath) return;
+    if (this.openElsewhere(sessionId)) {
+      void vscode.window.showInformationMessage(this.tr("sessions.lockedElsewhere"));
+      return;
+    }
     if (sessionId === this.state.sessionId) await this.newSession();
     await this.hideSession(sessionId);
     const command = this.hermesPath;
@@ -1313,8 +1507,8 @@ export class HermesService implements vscode.Disposable {
           respond(selected(pickOption(req.options, "allow_once")));
           return;
         }
-        // Super Auto: dangerous commands and execute_code run too; only server deploys and network in local mode still ask.
-        if (this.state.mode === "superAuto" && !netReason && !deployInfo) {
+        // Super Auto: dangerous commands and execute_code run too; only recursive deletes, server deploys and network in local mode still ask.
+        if (this.state.mode === "superAuto" && !netReason && !deployInfo && danger !== RECURSIVE_DELETE) {
           this.transcript.upsert({
             ...base, actions: [], state: "allowed", resolution: this.tr("perm.superAutoMode"),
             dangerReason: danger ? this.tr("perm.dangerous", danger) : undefined,
@@ -1406,7 +1600,7 @@ export class HermesService implements vscode.Disposable {
     const dirty = vscode.workspace.textDocuments.some((d) => d.isDirty && samePath(d.uri.fsPath, absPath));
     const stat = parsed.isPatch ? undefined : diffStat(parsed.oldText ?? "", parsed.newText);
     const warnings = [outside ? this.tr("perm.outside") : "", dirty ? this.tr("perm.dirty") : ""].filter(Boolean);
-    entry.reviewId = `r${this.seq}`;
+    entry.reviewId = `r${this.instance}.${this.seq}`;
     entry.absPath = absPath;
 
     this.transcript.upsert({
@@ -1554,6 +1748,8 @@ export class HermesService implements vscode.Disposable {
       await this.approval.enableInHermesConfig();
       this.notice("info", this.tr("notice.approvalEnabled"));
       await this.restart();
+      // Hermes reads the hook from its config at start, so the other panels' Hermes needs a restart too.
+      for (const peer of this.others()) if (peer.client) void peer.restart();
     } catch (error) {
       this.notice("error", this.tr("notice.approvalFailed", (error as Error).message));
     }
@@ -1562,7 +1758,7 @@ export class HermesService implements vscode.Disposable {
   async removeTerminalApprovalHook(): Promise<void> {
     const removed = await this.approval.removeFromHermesConfig();
     void vscode.window.showInformationMessage(this.tr(removed ? "approval.removed" : "approval.notInstalled"));
-    if (removed && !this.profiles.active()) await this.restart();
+    if (removed && !this.profiles.active()) await Promise.all([this, ...this.others()].filter((p) => p === this || p.client).map((p) => p.restart()));
   }
 
   // ---- phase 5: checkpoints, usage, rules, onboarding ---------------------------------------
@@ -2019,7 +2215,7 @@ export class HermesService implements vscode.Disposable {
     }
     if (wanted === this.state.currentModelId || modelBlockedByLocalMode(wanted)) return;
     try {
-      await this.client.setModel(sessionId, wanted);
+      await this.switchModel(this.client, sessionId, wanted);
       this.setState({ currentModelId: wanted });
       this.notice("info", this.tr("routing.switched", this.modelLabel(wanted), this.tr(reason)));
     } catch (error) {
@@ -2049,7 +2245,7 @@ export class HermesService implements vscode.Disposable {
     const status = this.turnProviderStatuses.find(worthFallback);
     if (failing) this.modelCooldown.set(failing, Date.now() + 5 * 60_000);
     try {
-      await client.setModel(sessionId, target);
+      await this.switchModel(client, sessionId, target);
     } catch (error) {
       this.notice("warn", this.tr("notice.modelFailed", (error as Error).message));
       return false;
@@ -2081,8 +2277,11 @@ export class HermesService implements vscode.Disposable {
 
   private async launchEnv(): Promise<{ env: NodeJS.ProcessEnv; approval: TerminalApprovalState }> {
     const profile = this.profiles.active();
+    const picked = this.pickedEffort();
     if (!profile) {
       const approval = await this.approval.hermesConfigState();
+      // The user's own config: touched only once they used the slider, and then only that one line.
+      if (picked) await this.shared.configLock(() => this.writeEffort(picked));
       return { env: { ...buildLaunchEnv({ parentEnv: process.env, mode: "hermes" }), ...this.approval.env(approval) }, approval };
     }
     // All custom profiles share one IDE-owned Hermes home, so their sessions stay listed together.
@@ -2090,8 +2289,13 @@ export class HermesService implements vscode.Disposable {
     const profileHome = this.hermesHomeDir();
     await mkdir(profileHome, { recursive: true });
     const configPath = path.join(profileHome, "config.yaml");
-    const { yaml, state } = await this.approval.prepareProfile(profileHome, buildProfileConfigYaml(custom));
-    if ((await readFile(configPath, "utf8").catch(() => "")) !== yaml) await writeFile(configPath, yaml, "utf8");
+    const prepared = await this.approval.prepareProfile(profileHome, buildProfileConfigYaml(custom));
+    const state = prepared.state;
+    // This file is rewritten at every start; the effort picked last must survive that.
+    const yaml = picked ? withReasoningEffort(prepared.yaml, picked) : prepared.yaml;
+    await this.shared.configLock(async () => {
+      if ((await readFile(configPath, "utf8").catch(() => "")) !== yaml) await writeFile(configPath, yaml, "utf8");
+    });
     const env = buildLaunchEnv({ parentEnv: process.env, mode: "custom", custom, profileHome });
     return { env: { ...env, ...this.approval.env(state) }, approval: state };
   }
@@ -2100,7 +2304,12 @@ export class HermesService implements vscode.Disposable {
     if (id === this.profiles.activeId()) return;
     await this.profiles.select(id);
     this.log.info(`profile switched to ${id}`);
-    await this.restartFresh();
+    await this.restartAllFresh();
+  }
+
+  /** The profile is one setting for the window: every panel's Hermes moves to it. */
+  private async restartAllFresh(): Promise<void> {
+    await Promise.all([this, ...this.others()].map((p) => p.restartFresh()));
   }
 
   private async saveProfile(msg: Extract<ViewToHost, { type: "saveProfile" }>): Promise<void> {
@@ -2113,13 +2322,13 @@ export class HermesService implements vscode.Disposable {
     await this.profiles.select(id);
     this.log.info(`profile ${id} saved (base ${msg.profile.baseUrl}, model ${msg.profile.model})`);
     // Saving activates the profile; endpoint, key or model may have changed, so start clean.
-    await this.restartFresh();
+    await this.restartAllFresh();
   }
 
   private async deleteProfile(id: string): Promise<void> {
     const wasActive = id === this.profiles.activeId();
     await this.profiles.delete(id);
-    if (wasActive) await this.restartFresh();
+    if (wasActive) await this.restartAllFresh();
     else await this.loadSettingsView();
   }
 
@@ -2299,6 +2508,7 @@ export class HermesService implements vscode.Disposable {
 
   dispose(): void {
     if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.shared.peers.delete(this);
     void this.shutdown();
     for (const d of this.disposables) d.dispose();
   }

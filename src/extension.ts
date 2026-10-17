@@ -4,6 +4,7 @@ import { McpHttpServer } from "./core/mcpHttpServer";
 import { supportsSecondarySidebar } from "./core/sidebar";
 import { t } from "./shared/strings";
 import { AgentLog } from "./vscode/agentLog";
+import { ChatHub } from "./vscode/chatHub";
 import { ChatViewProvider } from "./vscode/chatView";
 import { CodebaseIndex } from "./vscode/codebaseIndex";
 import { DiffReviewManager } from "./vscode/diffReview";
@@ -20,7 +21,9 @@ let ideMcp: McpHttpServer | undefined;
 
 /** Returned from activate() so the extension-host tests can drive the service directly. */
 export interface HermesIdeApi {
+  /** The first chat panel's service (the others come and go with their panels; see hub). */
   service: HermesService;
+  hub: ChatHub;
   reviews: DiffReviewManager;
   sessions: SessionsView;
   completion: TabCompletion;
@@ -41,18 +44,24 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
     version: String(context.extension.packageJSON.version ?? "0.0.0"),
   }, (line) => log.info(line));
   service = new HermesService(context, log, reviews, { completion, index, mcp: ideMcp });
-  const svc = service;
-  onSelection = (id, a, n) => svc.onReviewSelectionChanged(id, a, n);
+  const primary = service;
+  // Every chat panel gets its own service; commands not tied to a panel act on the one used last.
+  const hub = new ChatHub(primary);
+  const active = () => hub.active;
+  // Review ids carry their panel's number, so only the owner reacts.
+  onSelection = (id, a, n) => {
+    for (const s of hub.all()) s.onReviewSelectionChanged(id, a, n);
+  };
 
-  const statusBar = new HermesStatusBar(() => svc.locale);
-  const chat = new ChatViewProvider(context.extensionUri, svc);
+  const statusBar = new HermesStatusBar(() => active().locale);
+  const chat = new ChatViewProvider(context.extensionUri, hub);
   // Newer VS Code adds Hermes as a tab in the Secondary Side Bar on top of the activity bar icon, which always stays.
   void vscode.commands.executeCommand("setContext", "hermes.doesNotSupportSecondarySidebar", !supportsSecondarySidebar(vscode.version));
-  const updater = new IdeUpdater(context, log, () => svc.locale);
-  const sessions = new SessionsView(svc);
+  const updater = new IdeUpdater(context, log, () => active().locale);
+  const sessions = new SessionsView(hub);
   const sessionsTree = vscode.window.createTreeView(SessionsView.viewId, { treeDataProvider: sessions });
   const updateSessionsMessage = () => {
-    sessionsTree.message = svc.state.phase === "ready" ? undefined : t(svc.locale, "sessions.openPanel");
+    sessionsTree.message = active().state.phase === "ready" ? undefined : t(active().locale, "sessions.openPanel");
   };
 
   context.subscriptions.push(
@@ -60,32 +69,33 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
     reviews,
     completion,
     index,
-    svc,
+    hub,
+    primary,
     statusBar,
     sessions,
     sessionsTree,
     updater,
-    svc.onDidChangeState((s) => {
+    hub.onDidChangeState((s) => {
       statusBar.update(s);
       updateSessionsMessage();
     }),
-    svc.onDidChangeSessions(() => sessions.refresh()),
+    hub.onDidChangeSessions(() => sessions.refresh()),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, chat, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.secondaryViewId, chat, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.window.registerWebviewPanelSerializer(ChatViewProvider.panelViewType, chat),
     vscode.commands.registerCommand("hermes.openChat", () => chat.reveal({ type: "focusComposer" })),
     vscode.commands.registerCommand("hermes.openInEditor", () => chat.openInEditor()),
-    vscode.commands.registerCommand("hermes.newSession", () => svc.newSession()),
-    vscode.commands.registerCommand("hermes.stop", () => svc.stop()),
-    vscode.commands.registerCommand("hermes.restart", () => svc.restart()),
+    vscode.commands.registerCommand("hermes.newSession", () => active().newSession()),
+    vscode.commands.registerCommand("hermes.stop", () => active().stop()),
+    vscode.commands.registerCommand("hermes.restart", () => active().restart()),
     vscode.commands.registerCommand("hermes.configureEndpoint", () => chat.reveal({ type: "openEndpoint" })),
     vscode.commands.registerCommand("hermes.showLog", () => log.show(false)),
     vscode.commands.registerCommand("hermes.exportLogs", async () => {
       const target = await log.export();
-      if (target) void vscode.window.showInformationMessage(t(svc.locale, "log.exported", target.fsPath));
+      if (target) void vscode.window.showInformationMessage(t(active().locale, "log.exported", target.fsPath));
     }),
-    vscode.commands.registerCommand("hermes.clearAllowlist", () => svc.manageAllowlist()),
-    vscode.commands.registerCommand("hermes.removeApprovalHook", () => svc.removeTerminalApprovalHook()),
+    vscode.commands.registerCommand("hermes.clearAllowlist", () => active().manageAllowlist()),
+    vscode.commands.registerCommand("hermes.removeApprovalHook", () => active().removeTerminalApprovalHook()),
 
     // F-12: context from the editor and the explorer.
     vscode.commands.registerCommand("hermes.addSelectionToChat", async () => {
@@ -95,36 +105,42 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
       const sel = editor.selection;
       await chat.reveal();
       if (sel.isEmpty) {
-        svc.addContext({ kind: "file", path: doc.uri.fsPath });
+        active().addContext({ kind: "file", path: doc.uri.fsPath });
         return;
       }
       const endLine = sel.end.character === 0 && sel.end.line > sel.start.line ? sel.end.line : sel.end.line + 1;
       const range = new vscode.Range(sel.start.line, 0, endLine - 1, doc.lineAt(endLine - 1).text.length);
-      svc.addContext({ kind: "selection", path: doc.uri.fsPath, startLine: sel.start.line + 1, endLine, text: doc.getText(range) });
+      active().addContext({ kind: "selection", path: doc.uri.fsPath, startLine: sel.start.line + 1, endLine, text: doc.getText(range) });
     }),
     vscode.commands.registerCommand("hermes.addToChat", async (uri?: vscode.Uri, selected?: vscode.Uri[]) => {
       const targets = selected?.length ? selected : uri ? [uri] : [];
       await chat.reveal();
       for (const u of targets) {
         const stat = await vscode.workspace.fs.stat(u);
-        svc.addContext({ kind: stat.type & vscode.FileType.Directory ? "folder" : "file", path: u.fsPath });
+        active().addContext({ kind: stat.type & vscode.FileType.Directory ? "folder" : "file", path: u.fsPath });
       }
     }),
 
     // F-13
-    vscode.commands.registerCommand("hermes.inlineEdit", () => runInlineEdit(svc)),
+    vscode.commands.registerCommand("hermes.inlineEdit", () => runInlineEdit(active())),
 
     // F-14
     vscode.commands.registerCommand("hermes.sessions.refresh", () => sessions.refresh()),
     vscode.commands.registerCommand("hermes.sessions.open", async (s: SessionSummary) => {
+      // A session already open in a panel is shown there instead of being opened twice.
+      const owner = hub.all().find((p) => p.currentSessionId === s.id && p.hasViews);
+      if (owner) {
+        hub.touch(owner);
+        return chat.reveal();
+      }
       await chat.reveal();
-      await svc.openSession(s.id);
+      await active().openSession(s.id);
     }),
     vscode.commands.registerCommand("hermes.sessions.delete", async (s: SessionSummary) => {
-      const loc = svc.locale;
+      const loc = active().locale;
       const confirm = t(loc, "sessions.deleteConfirm");
       const answer = await vscode.window.showWarningMessage(t(loc, "sessions.deleteQuestion", s.title || s.id), { modal: true }, confirm);
-      if (answer === confirm) await svc.deleteSession(s.id);
+      if (answer === confirm) await active().deleteSession(s.id);
     }),
 
     // F-17 / F-18
@@ -133,7 +149,7 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
     }),
     vscode.commands.registerCommand("hermes.index.rebuild", () => index.rebuild()),
     vscode.commands.registerCommand("hermes.index.search", async () => {
-      const loc = svc.locale;
+      const loc = active().locale;
       const query = await vscode.window.showInputBox({ prompt: t(loc, "index.searchPrompt"), ignoreFocusOut: true });
       if (!query?.trim()) return;
       const hits = await index.search(query.trim(), 20);
@@ -158,30 +174,30 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
     }),
 
     // Phase 7: learning mode and project templates.
-    vscode.commands.registerCommand("hermes.stack.add", () => svc.pickStackRules()),
-    vscode.commands.registerCommand("hermes.deploy.history", () => svc.showDeployHistory()),
-    vscode.commands.registerCommand("hermes.learning.toggle", () => svc.toggleLearning()),
+    vscode.commands.registerCommand("hermes.stack.add", () => active().pickStackRules()),
+    vscode.commands.registerCommand("hermes.deploy.history", () => active().showDeployHistory()),
+    vscode.commands.registerCommand("hermes.learning.toggle", () => active().toggleLearning()),
 
     // Phase 6: full local mode.
-    vscode.commands.registerCommand("hermes.privacy.toggle", () => svc.setLocalOnly(!privacySettings().localOnly)),
-    vscode.commands.registerCommand("hermes.privacy.report", () => svc.showPrivacy()),
+    vscode.commands.registerCommand("hermes.privacy.toggle", () => active().setLocalOnly(!privacySettings().localOnly)),
+    vscode.commands.registerCommand("hermes.privacy.report", () => active().showPrivacy()),
 
     // Phase 5: project rules, usage report, checkpoints, and installing/updating Hermes.
-    vscode.commands.registerCommand("hermes.rules.open", () => svc.openRules()),
-    vscode.commands.registerCommand("hermes.usage.show", () => svc.showUsage()),
-    vscode.commands.registerCommand("hermes.checkpoint.undoRestore", () => svc.undoRestore()),
-    vscode.commands.registerCommand("hermes.hermesInstall", () => svc.maintenance.install()),
-    vscode.commands.registerCommand("hermes.hermesSetup", () => svc.maintenance.runSetupWizard()),
-    vscode.commands.registerCommand("hermes.hermesCheckUpdate", () => svc.maintenance.checkUpdate(true)),
-    vscode.commands.registerCommand("hermes.hermesUpdate", () => svc.maintenance.update()),
+    vscode.commands.registerCommand("hermes.rules.open", () => active().openRules()),
+    vscode.commands.registerCommand("hermes.usage.show", () => active().showUsage()),
+    vscode.commands.registerCommand("hermes.checkpoint.undoRestore", () => active().undoRestore()),
+    vscode.commands.registerCommand("hermes.hermesInstall", () => primary.maintenance.install()),
+    vscode.commands.registerCommand("hermes.hermesSetup", () => primary.maintenance.runSetupWizard()),
+    vscode.commands.registerCommand("hermes.hermesCheckUpdate", () => primary.maintenance.checkUpdate(true)),
+    vscode.commands.registerCommand("hermes.hermesUpdate", () => primary.maintenance.update()),
 
     // Phase 4: update check for the standalone IDE (explains itself in plain VS Code).
     vscode.commands.registerCommand("hermes.update.check", () => updater.checkNow(true)),
 
     // F-16: quick profile switch (also from the status bar model item).
     vscode.commands.registerCommand("hermes.switchProfile", async () => {
-      const loc = svc.locale;
-      const { profiles, activeProfileId, hermesConfig } = svc.state.endpoint;
+      const loc = active().locale;
+      const { profiles, activeProfileId, hermesConfig } = active().state.endpoint;
       const picked = await vscode.window.showQuickPick(
         [
           ...profiles.map((p) => ({
@@ -196,17 +212,17 @@ export function activate(context: vscode.ExtensionContext): HermesIdeApi {
       );
       if (!picked) return;
       if (!picked.id) return chat.reveal({ type: "openEndpoint" });
-      await svc.selectProfile(picked.id);
+      await active().selectProfile(picked.id);
     }),
   );
 
-  statusBar.update(svc.state);
+  statusBar.update(active().state);
   updateSessionsMessage();
-  void svc.refresh();
+  void primary.refresh();
   void index.reconfigure();
   updater.start();
-  svc.maintenance.scheduleBackgroundCheck();
-  return { service: svc, reviews, sessions, completion, index, updater };
+  primary.maintenance.scheduleBackgroundCheck();
+  return { service: primary, hub, reviews, sessions, completion, index, updater };
 }
 
 export async function deactivate(): Promise<void> {

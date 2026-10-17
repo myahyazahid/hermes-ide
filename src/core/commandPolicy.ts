@@ -1,11 +1,16 @@
 // Terminal command policy on the editor side (F-08): a per-workspace "allow always" list, and a
 // set of dangerous commands that always ask even when listed (PRD security section).
 
+/** Still asks in Super Auto mode, unlike the other dangerous commands. */
+export const RECURSIVE_DELETE = "recursive delete";
+
 const DANGEROUS: { pattern: RegExp; reason: string }[] = [
-  { pattern: /\brm\s+(-[a-z]*r[a-z]*f?|-[a-z]*f[a-z]*r|--recursive)\b/i, reason: "recursive delete" },
-  { pattern: /\b(remove-item|ri|rm|del|erase)\b[^|;&]*\s-r(ecurse)?\b/i, reason: "recursive delete" },
-  { pattern: /\b(rmdir|rd)\b[^|;&]*\s\/s\b/i, reason: "recursive delete" },
-  { pattern: /\bdel\b[^|;&]*\s\/s\b/i, reason: "recursive delete" },
+  { pattern: /\brm\b(\s+-{1,2}[a-z-]+)*\s+(-[a-z]*r[a-z]*|--recursive)\b/i, reason: RECURSIVE_DELETE },
+  { pattern: /\b(remove-item|ri|rm|del|erase)\b[^|;&]*\s-r(ecurse)?\b/i, reason: RECURSIVE_DELETE },
+  { pattern: /\b(rmdir|rd)\b[^|;&]*\s\/s\b/i, reason: RECURSIVE_DELETE },
+  { pattern: /\bdel\b[^|;&]*\s\/s\b/i, reason: RECURSIVE_DELETE },
+  // execute_code is checked against the same list, so cover the usual library calls too.
+  { pattern: /\b(shutil\.)?rmtree\s*\(|\b(fs\.)?(rmSync|rm|promises\.rm)\s*\([^)]*recursive\s*:\s*true/i, reason: RECURSIVE_DELETE },
   { pattern: /\bgit\s+push\b[^|;&]*(\s--force(-with-lease)?\b|\s-f\b|\s\+\S)/i, reason: "force push" },
   { pattern: /\bgit\s+reset\s+--hard\b/i, reason: "discard changes" },
   { pattern: /\bgit\s+clean\b[^|;&]*\s-[a-z]*f/i, reason: "delete untracked files" },

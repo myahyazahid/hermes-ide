@@ -1,6 +1,6 @@
 // Claude-style composer menus: "/" commands and the approval mode picker.
 import type { ReactNode } from "react";
-import type { AgentMode } from "../../src/shared/protocol";
+import { EFFORTS, type AgentMode, type Effort } from "../../src/shared/protocol";
 import { t, type Locale, type StringKey } from "../../src/shared/strings";
 
 export interface MenuItem {
@@ -24,12 +24,13 @@ export function nextMode(mode: AgentMode): AgentMode {
   return MODES[(MODES.indexOf(mode) + 1) % MODES.length];
 }
 
-export function MenuList({ items, active, onHover, label, header }: {
+export function MenuList({ items, active, onHover, label, header, footer }: {
   items: MenuItem[];
   active: number;
   onHover(i: number): void;
   label: string;
   header?: ReactNode;
+  footer?: ReactNode;
 }) {
   let lastSection: string | undefined;
   return (
@@ -61,6 +62,59 @@ export function MenuList({ items, active, onHover, label, header }: {
           </div>
         );
       })}
+      {footer}
+    </div>
+  );
+}
+
+/** One step up or down the effort slider, staying on it at the ends. */
+export function stepEffort(effort: Effort, by: -1 | 1): Effort {
+  const i = Math.min(EFFORTS.length - 1, Math.max(0, EFFORTS.indexOf(effort) + by));
+  return EFFORTS[i];
+}
+
+/** The "Effort" row under the modes, like Claude Code: a label and a five-stop slider. */
+export function EffortRow({ effort, disabled, locale, onPick }: {
+  effort: Effort;
+  disabled: boolean;
+  locale: Locale;
+  onPick(effort: Effort): void;
+}) {
+  const label = (e: Effort) => t(locale, `effort.${e}` as StringKey);
+  const index = EFFORTS.indexOf(effort);
+  return (
+    <div className={`effort-row${disabled ? " disabled" : ""}`} title={disabled ? t(locale, "effort.busy") : t(locale, "effort.tooltip")}>
+      <span className="menu-icon" aria-hidden>
+        <svg width="16" height="16" viewBox="0 0 16 16" {...stroke}>
+          <path d="M1.5 6.5v3M3.5 4.5v7M5.5 6v4M5.5 8h5M10.5 6v4M12.5 4.5v7M14.5 6.5v3" />
+        </svg>
+      </span>
+      <span className="effort-label">
+        {t(locale, "effort.title")} <span className="effort-value">({label(effort)})</span>
+      </span>
+      <div
+        className="effort-track"
+        role="slider"
+        tabIndex={-1}
+        aria-label={t(locale, "effort.title")}
+        aria-valuemin={0}
+        aria-valuemax={EFFORTS.length - 1}
+        aria-valuenow={index}
+        aria-valuetext={label(effort)}
+        aria-disabled={disabled}
+      >
+        {EFFORTS.map((e, i) => (
+          <button
+            key={e}
+            type="button"
+            className={`effort-stop${i === index ? " on" : ""}`}
+            title={label(e)}
+            aria-label={label(e)}
+            disabled={disabled}
+            onClick={() => onPick(e)}
+          />
+        ))}
+      </div>
     </div>
   );
 }

@@ -70,7 +70,7 @@
   "cfg.routingFallback": "Model to retry with once when the chosen one fails with an authentication, rate-limit, quota or server error. Empty turns the fallback off.",
   "cfg.routingMaxChars": "A message longer than this many characters counts as heavy work.",
   "cfg.tasksMaxParallel": "How many parallel agent tasks may run at once. Each is a separate Hermes process in its own git worktree, so memory and model usage grow with it.",
-  "cfg.narrateSteps": "Ask the agent to write one short sentence before each tool call saying what it is about to do, like Claude Code. Helps models that otherwise call tools silently (e.g. Gemini Flash). Sent once per session, with the next message of a session that has not had it yet.",
+  "cfg.narrateSteps": "Ask the agent to write one short sentence before each tool call saying what it is about to do, and, once results come back, one short sentence on what they showed before its next step, like Claude Code. Helps models that otherwise call tools silently (e.g. Gemini Flash). Sent once per session, with the next message of a session that has not had it yet.",
   "cfg.agentLanguage":"Language the agent answers in. `ui` (default) uses the panel language, `id` or `en` force one, `off` sends no language instruction. The agent still follows the user when they write in another language.",
   "cfg.learningLevel": "Depth of the explanations in learning mode: `beginner` (plain words, terms defined) or `intermediate` (reasons, alternatives and trade-offs).",
   "cmd.learningToggle": "Toggle Learning Mode",
